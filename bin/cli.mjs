@@ -337,9 +337,30 @@ async function killBlockers(blockers) {
 
 /* ----------------------------------------------------- package manager --- */
 
+// Shell-free subprocess helper. On Windows, package-manager commands are .cmd
+// shims, so we invoke cmd.exe explicitly instead of shell:true — that keeps argv
+// escaping intact and avoids Node's DEP0190 deprecation warning.
+function runCommand(pm, args, cwd) {
+  const options = { encoding: 'utf8', timeout: 300000 };
+  if (cwd) options.cwd = cwd;
+  if (IS_WIN) {
+    const comspec = env.ComSpec || env.COMSPEC || 'cmd.exe';
+    return spawnSync(comspec, ['/d', '/c', pm, ...args], options);
+  }
+  return spawnSync(pm, args, options);
+}
+
+function runInteractive(pm, args, cwd) {
+  if (IS_WIN) {
+    const comspec = env.ComSpec || env.COMSPEC || 'cmd.exe';
+    return spawnSync(comspec, ['/d', '/c', pm, ...args], { cwd, stdio: 'inherit' });
+  }
+  return spawnSync(pm, args, { cwd, stdio: 'inherit' });
+}
+
 function availablePackageManagers() {
   return ['pnpm', 'npm'].filter((pm) => {
-    const probe = spawnSync(pm, ['--version'], { encoding: 'utf8', timeout: 20000, shell: IS_WIN });
+    const probe = runCommand(pm, ['--version']);
     return !probe.error && probe.status === 0;
   });
 }
@@ -367,16 +388,47 @@ async function choosePackageManager(requested) {
 
 const SAVE_EXACT = { pnpm: ['--save-exact'], npm: ['--save-exact'] };
 
-function installWith(pm, name, version, dir) {
+// pnpm >= 10 blocks dependency build scripts by default; the add still exits
+// non-zero with this signature. We handle it inside the run instead of leaving
+// the user at an external prompt.
+const IGNORED_BUILDS = /ERR_PNPM_IGNORED_BUILDS|Ignored build scripts/i;
+
+async function resolveIgnoredBuilds(pm, dir, name) {
+  stdout.write(`   ${yellow('!')} ${pm} blocked build scripts for ${name} (dependency build approval)\n`);
+  const approveCmd = pm === 'npm' ? 'rebuild' : 'approve-builds';
+  if (!rl) {
+    stdout.write(`     ${dim(`run manually: cd "${dir}" && ${pm} ${approveCmd}`)}\n`);
+    return false;
+  }
+  if (!(await confirm(`Run ${pm} ${approveCmd} now?`))) return false;
+  stdout.write(`   ${dim(`running: ${pm} ${approveCmd} (in ${dir})`)}\n`);
+  rl.pause();
+  const res = runInteractive(pm, [approveCmd], dir);
+  rl.resume();
+  if (res.error || res.status !== 0) {
+    stdout.write(`   ${red(CROSS)} ${pm} ${approveCmd} exited ${res.status ?? 'error'}\n`);
+    return false;
+  }
+  stdout.write(`   ${green(TICK)} build scripts approved for ${name}\n`);
+  return true;
+}
+
+async function installWith(pm, name, version, dir) {
   writeFileSync(join(dir, 'package.json'),
     JSON.stringify({ name: name + '-opencode-plugin-wrapper', version: '0.0.0', private: true }, null, 2));
   const args = ['add', `${name}@${version}`, ...(SAVE_EXACT[pm] ?? ['--save-exact'])];
-  const res = spawnSync(pm, args, { cwd: dir, encoding: 'utf8', timeout: 300000, shell: IS_WIN });
+  const res = runCommand(pm, args, dir);
   const output = String(res.stdout ?? '') + String(res.stderr ?? '');
   if (output.trim()) stdout.write(indent(output));
-  if (res.status !== 0) {
-    throw Object.assign(new Error(`${pm} add ${name}@${version} failed (exit ${res.status}).`), { exitCode: 1 });
+  if (res.status === 0) return;
+  if (pm === 'pnpm' && IGNORED_BUILDS.test(output)) {
+    if (await resolveIgnoredBuilds(pm, dir, name)) return;
+    throw Object.assign(
+      new Error(`pnpm blocked build scripts for ${name}. Approve them, then re-run.`),
+      { exitCode: 1 },
+    );
   }
+  throw Object.assign(new Error(`${pm} add ${name}@${version} failed (exit ${res.status}).`), { exitCode: 1 });
 }
 
 /* ------------------------------------------------------------- leftovers -- */
@@ -521,7 +573,7 @@ async function main() {
     const dir = join(cache.path, p.spec);
     mkdirSync(dir, { recursive: true });
     stdout.write(`   ${'+'} ${p.name}@${p.version}\n`);
-    installWith(pm, p.name, p.version, dir);
+    await installWith(pm, p.name, p.version, dir);
   }
 
   section('Verify');
