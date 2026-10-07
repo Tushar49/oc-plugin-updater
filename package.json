@@ -1,10 +1,10 @@
 {
-  "name": "opencode-plugin-updater",
+  "name": "oc-plugin-updater",
   "version": "0.1.0",
-  "description": "Cross-platform updater for OpenCode npm plugins — resets the plugin package cache and reinstalls. No installer TUI, never writes OpenCode config.",
+  "description": "Cross-platform CLI that updates OpenCode npm plugins — resets the plugin package cache and reinstalls with pnpm or npm. No installer TUI, never writes OpenCode config.",
   "type": "module",
   "bin": {
-    "opencode-plugin-updater": "bin/cli.mjs"
+    "oc-plugin-updater": "bin/cli.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -13,11 +13,23 @@
     "bin",
     "updater.ps1"
   ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Tushar49/oc-plugin-updater.git"
+  },
+  "homepage": "https://github.com/Tushar49/oc-plugin-updater#readme",
+  "bugs": {
+    "url": "https://github.com/Tushar49/oc-plugin-updater/issues"
+  },
+  "scripts": {
+    "prepublishOnly": "node --check bin/cli.mjs"
+  },
   "keywords": [
     "opencode",
     "plugin",
     "updater",
-    "cli"
+    "cli",
+    "plugins"
   ],
   "license": "MIT"
 }

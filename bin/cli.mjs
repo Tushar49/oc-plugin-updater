@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * opencode-plugin-updater — cross-platform updater for OpenCode npm plugins.
+ * oc-plugin-updater — cross-platform updater for OpenCode npm plugins.
  *
  * Reads the `plugin` array from OpenCode's config (opencode.jsonc / tui.json),
  * resolves target versions from the npm registry, resets OpenCode's plugin
@@ -42,7 +42,7 @@ function banner() {
   const w = 54;
   const line = DOT.repeat(w);
   stdout.write(`\n ${cyan(line)}\n`);
-  stdout.write(` ${bold('opencode-plugin-updater')}  ${dim('v' + VERSION)}\n`);
+  stdout.write(` ${bold('oc-plugin-updater')}  ${dim('v' + VERSION)}\n`);
   stdout.write(` ${dim('cross-platform OpenCode npm-plugin updater')}\n`);
   stdout.write(` ${cyan(line)}\n\n`);
 }
@@ -93,10 +93,10 @@ const flags = { killBlockers: false, help: false, configDir: null, cacheDir: nul
 }
 if (flags.help) {
   stdout.write(`
-opencode-plugin-updater — update OpenCode npm plugins without the installer TUI
+oc-plugin-updater — update OpenCode npm plugins without the installer TUI
 
 Usage:
-  node bin/cli.mjs [options]        # or: pnpm dlx <package> (after publish)
+  node bin/cli.mjs [options]        # or: npx oc-plugin-updater  ·  pnpm dlx oc-plugin-updater
   updater.ps1 [options]             # Windows convenience shim
 
 Options:
