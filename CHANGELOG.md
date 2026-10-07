@@ -11,6 +11,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - MIT `LICENSE`, package metadata (`repository`, `homepage`, `bugs`), and a `prepublishOnly` syntax gate.
 - Repo promotion roadmap in `_archive/development/plans/` (dev branch only).
 - In-flow pnpm build approval: on `ERR_PNPM_IGNORED_BUILDS`, the run offers to execute `approve-builds` in the wrapper so the update completes without an external prompt.
+- `--list` version catalogue with `(current)`, `(latest)`, dist-tag, and `(not published)` markers (`--all` for the full list).
+- `--set <name@version>`, `--only <name>`, `--dry-run`, and `--yes` for scripted and non-interactive runs.
 
 ### Changed
 

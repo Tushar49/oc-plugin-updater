@@ -57,10 +57,25 @@ Windows convenience shim:
 .\updater.ps1
 ```
 
+### Explore and dry-run
+
+```bash
+node bin/cli.mjs --list                 # full version catalogue per plugin
+node bin/cli.mjs --list --all           # every published version
+node bin/cli.mjs --dry-run              # show the plan, change nothing
+node bin/cli.mjs --set oh-my-openagent@5.1.20 --only oh-my-openagent --dry-run
+```
+
 ### Flags
 
 | Flag | Description |
 | --- | --- |
+| `--list` | Print the full version catalogue per plugin and exit. |
+| `--set <name@version>` | Target an exact version/tag for a plugin (repeatable). |
+| `--only <name>` | Process only the named plugin (repeatable). |
+| `--dry-run` | Show what would change; touches nothing. |
+| `--yes`, `-y` | Skip the confirmation prompt (non-interactive). |
+| `--all` | With `--list`, show every version (default caps at 30). |
 | `--pm <pnpm\|npm>` | Package manager to use. When both are installed, the CLI asks. |
 | `--config-dir <path>` | Override config-directory detection. |
 | `--cache-dir <path>` | Override package-cache detection. |

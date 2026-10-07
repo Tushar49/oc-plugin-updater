@@ -37,9 +37,10 @@ A standalone, cross-platform CLI that updates OpenCode npm plugins by resetting 
 - **APPROVED — shell-free subprocesses:** replace `shell: true` with an explicit `cmd.exe /d /c` invocation on Windows; removes the `DEP0190` deprecation warning and the unescaped-argument risk.
 - **REJECTED — workspace isolation:** no special handling for pnpm's `pnpm-workspace.yaml` side effects in v1.
 
-### P1 — Version control surface
-- `--list`: full version catalogue per plugin (registry `dist-tags` + abbreviated packument), semver-sorted, marked `(current)` / `(latest)` / `(beta)` / `(not published)`.
-- `--set <plugin>@<version>`: pin an exact target; `--latest <plugin>` to bump one plugin only.
+### P1 — Version control surface (shipped)
+
+- `--list`: full version catalogue per plugin (registry `dist-tags` + abbreviated packument), semver-sorted, marked `(current)` / `(latest)` / `(beta)` / `(not published)`; `--all` uncaps the list.
+- `--set <plugin>@<version>`: pin an exact target; `--only <plugin>` restricts processing to one plugin.
 - `--dry-run`: print the full plan (deletes, installs) and change nothing.
 - `--yes`: non-interactive confirmation for CI.
 
@@ -94,7 +95,7 @@ A standalone, cross-platform CLI that updates OpenCode npm plugins by resetting 
 | --- | --- | --- |
 | M1 (done) | Core CLI, docs, license, branches | `node --check` clean; run reaches versions + lock handling |
 | M2 | P0.5 pipeline hardening (build-approval) | Failed build triggers in-flow `pnpm approve-builds`; run completes without an external prompt |
-| M2b | P1 flags (`--list`/`--set`/`--dry-run`/`--yes`) | Catalogue prints; chosen version installs |
+| M2b (done) | P1 flags (`--list`/`--set`/`--dry-run`/`--yes`) | Catalogue prints; chosen version installs |
 | M3 | P2 TUI picker | Arrows/filter/select work; non-TTY fallback intact |
 | M4 | P3 maintenance toolkit | `--clean`/`--doctor`/`--backup` verified on real cache |
 | M5 | Tests + CI + first npm release | CI green on matrix; `npx oc-plugin-updater` works |
