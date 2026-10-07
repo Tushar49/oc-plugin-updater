@@ -23,10 +23,19 @@ A standalone, cross-platform CLI that updates OpenCode npm plugins by resetting 
 | Programmatic library API | ✗ | ✗ | ✗ | ✓ | planned |
 | Version picker UI | ✗ | partial | ✗ | ✗ | planned (TUI) |
 | Cleanup / orphan prune | ✗ | ✗ | ✗ | ✗ | planned |
+| Handles pnpm build-script approval | ✗ | ✗ | ✗ | ✗ | planned (P0.5) |
 
-**Where we already lead:** external, cross-platform, zero-dependency, lock-safe, pm-choice, leftovers reporting, config read-only. **Where we lag:** scheduled checks, in-app notification, TUI version selection, library API, cleanup utilities.
+**Where we already lead:** external, cross-platform, zero-dependency, lock-safe, pm-choice, leftovers reporting, config read-only. **Where we lag:** scheduled checks, in-app notification, TUI version selection, library API, cleanup utilities. **First gap closed:** unattended pnpm build-script approval (P0.5) — no competitor handles it.
 
 ## 3. Feature roadmap
+
+### P0.5 — Update pipeline hardening (decided)
+
+- **APPROVED — in-flow build approval:** detect pnpm's `ERR_PNPM_IGNORED_BUILDS` after `pnpm add` and run `pnpm approve-builds` in the wrapper (or retry with the allow-build flag) so the update completes inside the tool instead of leaving the user at an external prompt. No known alternative handles this — our clearest functional differentiator.
+- **REJECTED — pre-emptive allow-list:** do not write `onlyBuiltDependencies` before install.
+- **REJECTED — automatic atomic swap:** keep delete-then-install; no temp-dir + swap.
+- **REJECTED — subprocess changes:** keep `shell: true`; the `DEP0190` deprecation warning is accepted for now.
+- **REJECTED — workspace isolation:** no special handling for pnpm's `pnpm-workspace.yaml` side effects in v1.
 
 ### P1 — Version control surface
 - `--list`: full version catalogue per plugin (registry `dist-tags` + abbreviated packument), semver-sorted, marked `(current)` / `(latest)` / `(beta)` / `(not published)`.
@@ -84,7 +93,8 @@ A standalone, cross-platform CLI that updates OpenCode npm plugins by resetting 
 | Milestone | Contents | Exit criteria |
 | --- | --- | --- |
 | M1 (done) | Core CLI, docs, license, branches | `node --check` clean; run reaches versions + lock handling |
-| M2 | P1 flags (`--list`/`--set`/`--dry-run`/`--yes`) | Catalogue prints; chosen version installs |
+| M2 | P0.5 pipeline hardening (build-approval) | Failed build triggers in-flow `pnpm approve-builds`; run completes without an external prompt |
+| M2b | P1 flags (`--list`/`--set`/`--dry-run`/`--yes`) | Catalogue prints; chosen version installs |
 | M3 | P2 TUI picker | Arrows/filter/select work; non-TTY fallback intact |
 | M4 | P3 maintenance toolkit | `--clean`/`--doctor`/`--backup` verified on real cache |
 | M5 | Tests + CI + first npm release | CI green on matrix; `npx oc-plugin-updater` works |
@@ -99,3 +109,4 @@ A standalone, cross-platform CLI that updates OpenCode npm plugins by resetting 
 | Plugin API/format changes (OpenCode v2) | Read both `plugin` and `plugins`; track `cli.json`; follow upstream migration guide |
 | Name collisions on npm | Monitor registry; name reserved as `oc-plugin-updater` |
 | TUI complexity creep | Zero-dep renderer first; opentui behind a flag |
+| pnpm blocks dependency build scripts (observed with oh-my-openagent) | P0.5: detect `ERR_PNPM_IGNORED_BUILDS`, run `pnpm approve-builds` in-flow |
