@@ -1,6 +1,7 @@
-# opencode-plugin-updater — Feature Implementation Plan
+# oc-plugin-updater — Feature Implementation Plan
 
 **Status:** P0 (core updater) implemented. This plan covers P1–P5.
+**Name:** `oc-plugin-updater` (renamed 2026-10-08; npm name verified available).
 **Hard rule:** no hardcoded paths anywhere in this repo. All examples use `~/.config/opencode`-style placeholders or environment variables only.
 
 ---
