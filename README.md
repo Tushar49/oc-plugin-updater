@@ -1,6 +1,6 @@
 <div align="center">
 
-# opencode-plugin-updater
+# oc-plugin-updater
 
 **Update your OpenCode npm plugins from one command — no installer TUI, zero config edits.**
 
@@ -20,7 +20,7 @@ OpenCode installs npm plugins with Bun at startup and caches them locally. Once 
 
 ## What this does
 
-`opencode-plugin-updater` is a small, dependency-free Node CLI that:
+`oc-plugin-updater` is a small, dependency-free Node CLI that:
 
 1. **Reads** the plugin list from your OpenCode config — `plugin` (v1) and `plugins` (v2) shapes, across `opencode.jsonc`, `opencode.json`, `tui.json`, `cli.json`.
 2. **Resolves** the target version from the npm registry and shows `(current)` vs `(latest)` per plugin.
@@ -37,7 +37,15 @@ Your config files are never written to.
 
 ## Usage
 
-Run the CLI directly from a checkout:
+Zero-install (after publish):
+
+```bash
+npx oc-plugin-updater
+# or
+pnpm dlx oc-plugin-updater
+```
+
+From a checkout:
 
 ```bash
 node bin/cli.mjs

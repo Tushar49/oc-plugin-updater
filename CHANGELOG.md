@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Added
+
+- MIT `LICENSE`, package metadata (`repository`, `homepage`, `bugs`), and a `prepublishOnly` syntax gate.
+- Repo promotion roadmap in `_archive/development/plans/` (dev branch only).
+
+### Changed
+
+- Project renamed to **`oc-plugin-updater`** across package name, bin, banner, and docs — the previous npm name was taken and deprecated.
+- Commit metadata normalized to a neutral project identity with no co-author trailers.
+
 ### Planned
 
 - Version catalogue: list all published versions per plugin, with `(current)` and `(latest)` markers.

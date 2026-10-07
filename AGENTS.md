@@ -14,7 +14,8 @@ updater.ps1        Windows convenience shim — keep it thin, no logic
 package.json       no dependencies; keep it that way
 README.md          user-facing docs
 CHANGELOG.md       Keep a Changelog history
-_archive/          development notes and plans — tracked on `dev` only
+LICENSE            MIT
+_archive/          development notes and plans (incl. promotion roadmap) — tracked on `dev` only
 ```
 
 ## Commands
