@@ -1,0 +1,23 @@
+{
+  "name": "opencode-plugin-updater",
+  "version": "0.1.0",
+  "description": "Cross-platform updater for OpenCode npm plugins — resets the plugin package cache and reinstalls. No installer TUI, never writes OpenCode config.",
+  "type": "module",
+  "bin": {
+    "opencode-plugin-updater": "bin/cli.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "bin",
+    "updater.ps1"
+  ],
+  "keywords": [
+    "opencode",
+    "plugin",
+    "updater",
+    "cli"
+  ],
+  "license": "MIT"
+}
