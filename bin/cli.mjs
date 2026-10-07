@@ -61,7 +61,7 @@ function indent(text, prefix = '     ') {
 
 /* ------------------------------------------------------------ cli parsing -- */
 
-const flags = { killBlockers: false, help: false, configDir: null, cacheDir: null, pm: null };
+const flags = { killBlockers: false, help: false, configDir: null, cacheDir: null, pm: null, list: false, dryRun: false, yes: false, all: false, set: [], only: [] };
 {
   const args = argv.slice(2);
   for (let i = 0; i < args.length; i++) {
@@ -81,6 +81,12 @@ const flags = { killBlockers: false, help: false, configDir: null, cacheDir: nul
     else if (key === '--config-dir') flags.configDir = takeValue();
     else if (key === '--cache-dir') flags.cacheDir = takeValue();
     else if (key === '--pm') flags.pm = takeValue();
+    else if (key === '--list') flags.list = true;
+    else if (key === '--dry-run') flags.dryRun = true;
+    else if (key === '--yes' || key === '-y') flags.yes = true;
+    else if (key === '--all') flags.all = true;
+    else if (key === '--set') flags.set.push(takeValue());
+    else if (key === '--only') flags.only.push(takeValue());
     else {
       console.error(`Unknown option: ${arg}\nRun with --help for usage.`);
       exit(2);
@@ -100,6 +106,12 @@ Usage:
   updater.ps1 [options]             # Windows convenience shim
 
 Options:
+  --list               print the full version catalogue for each plugin and exit
+  --set <name@ver>     target an exact version/tag for a plugin (repeatable)
+  --only <name>        process only the named plugin (repeatable)
+  --dry-run            show what would change; touch nothing
+  --yes, -y            skip the confirmation prompt (non-interactive)
+  --all                with --list, show every version (default caps at 30)
   --pm <pnpm|npm>      package manager to use (asks when both are installed)
   --config-dir <path>  override OpenCode config directory detection
   --cache-dir <path>   override plugin package cache detection
@@ -379,7 +391,7 @@ async function choosePackageManager(requested) {
     }
     return requested;
   }
-  if (available.length === 1 || !rl) return available[0]; // pnpm preferred, npm fallback
+  if (available.length === 1 || !rl || flags.yes) return available[0]; // pnpm preferred, npm fallback
   return ask(`Package manager to use ${dim(`(${available.join(' / ')})`)}`, {
     defaultValue: available[0],
     validate: (v) => (available.includes(v) ? null : `Choose one of: ${available.join(', ')}`),
@@ -474,6 +486,78 @@ function reportLeftovers(configDir, pkgRoot, plans) {
   }
 }
 
+/* ------------------------------------------------------------ catalogue --- */
+
+function compareSemver(a, b) {
+  const parse = (v) => {
+    const m = String(v).match(/^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?/);
+    if (!m) return null;
+    return { nums: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] ? m[4].split('.') : null };
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  if (!pa || !pb) return String(a).localeCompare(String(b));
+  for (let i = 0; i < 3; i++) if (pa.nums[i] !== pb.nums[i]) return pa.nums[i] - pb.nums[i];
+  if (!pa.pre && pb.pre) return 1;   // release > prerelease
+  if (pa.pre && !pb.pre) return -1;
+  if (!pa.pre && !pb.pre) return 0;
+  const n = Math.max(pa.pre.length, pb.pre.length);
+  for (let i = 0; i < n; i++) {
+    const x = pa.pre[i];
+    const y = pb.pre[i];
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const xn = /^\d+$/.test(x);
+    const yn = /^\d+$/.test(y);
+    if (xn && yn) { if (Number(x) !== Number(y)) return Number(x) - Number(y); }
+    else if (xn) return -1;          // numeric identifiers sort before alphanumeric
+    else if (yn) return 1;
+    else if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+async function fetchVersionList(name) {
+  const url = `https://registry.npmjs.org/${name.replace('/', '%2F')}`;
+  try {
+    const res = await fetch(url, {
+      headers: { Accept: 'application/vnd.npm.install-v1+json' },
+      signal: AbortSignal.timeout(20000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return { versions: Object.keys(data.versions ?? {}), tags: data['dist-tags'] ?? {} };
+  } catch {
+    return null;
+  }
+}
+
+const CATALOGUE_CAP = 30;
+
+async function printCatalogue(plans, showAll) {
+  for (const p of plans) {
+    const info = await fetchVersionList(p.name);
+    if (!info) { stdout.write(`\n   ${red(CROSS)} ${p.name}: registry lookup failed\n`); continue; }
+    const tagByVersion = new Map();
+    for (const [tag, ver] of Object.entries(info.tags)) if (!tagByVersion.has(ver)) tagByVersion.set(ver, tag);
+    const sorted = info.versions.slice().sort((a, b) => compareSemver(b, a));
+    const shown = showAll ? sorted : sorted.slice(0, CATALOGUE_CAP);
+    const installedNote = p.installed
+      ? (info.versions.includes(p.installed) ? '' : ` ${yellow('(not published)')}`)
+      : '';
+    stdout.write(`\n   ${bold(p.name)}  ${dim('installed')} ${p.installed ?? 'none'}${installedNote}\n`);
+    for (const ver of shown) {
+      const marks = [];
+      if (ver === p.installed) marks.push(dim('current'));
+      if (tagByVersion.has(ver)) marks.push(green(tagByVersion.get(ver)));
+      stdout.write(`     ${ver}${marks.length ? '  ' + marks.join(' ') : ''}\n`);
+    }
+    if (shown.length < sorted.length) {
+      stdout.write(`     ${dim(`… ${sorted.length - shown.length} more (use --all)`)}\n`);
+    }
+  }
+}
+
 /* ---------------------------------------------------------------- main ---- */
 
 async function main() {
@@ -500,7 +584,7 @@ async function main() {
   row('plugins', specs.join(', '));
 
   section('Versions');
-  const plans = [];
+  let plans = [];
   for (const spec of specs) {
     const { name, ref } = splitSpec(spec);
     const target = await resolveTarget(name, ref);
@@ -513,6 +597,33 @@ async function main() {
       }
     }
     plans.push({ spec, name, ...target, installed });
+  }
+
+  // --only: restrict processing to the named plugins.
+  if (flags.only.length) {
+    const wanted = new Set(flags.only.map((s) => s.trim()));
+    const missing = [...wanted].filter((n) => !plans.some((p) => p.name === n));
+    if (missing.length) stdout.write(`   ${yellow('!')} --only: not in config: ${missing.join(', ')}\n`);
+    plans = plans.filter((p) => wanted.has(p.name));
+    if (!plans.length) throw Object.assign(new Error('--only matched no configured plugins.'), { exitCode: 2 });
+  }
+
+  // --set name@version: override the target version for that plugin.
+  for (const entry of flags.set) {
+    const at = entry.lastIndexOf('@');
+    if (at <= 0) throw Object.assign(new Error(`Invalid --set value: ${entry} (expected name@version)`), { exitCode: 2 });
+    const setName = entry.slice(0, at);
+    const hit = plans.find((p) => p.name === setName);
+    if (!hit) throw Object.assign(new Error(`--set: ${setName} is not a selected/configured plugin.`), { exitCode: 2 });
+    const t = await resolveTarget(setName, entry.slice(at + 1));
+    hit.version = t.version;
+    hit.tag = t.tag;
+    hit.upToDate = hit.installed === hit.version;
+  }
+
+  if (flags.list) {
+    await printCatalogue(plans, flags.all);
+    return 0;
   }
 
   const nameW = Math.max(...plans.map((p) => p.name.length), 7);
@@ -539,7 +650,7 @@ async function main() {
   let locked = probeLocked(nativeFiles);
   if (locked.length) {
     stdout.write(`   ${yellow('!')} ${locked.length} package file(s) locked by a running process\n`);
-    if (flags.killBlockers) {
+    if (flags.killBlockers && !flags.dryRun) {
       const blockers = findBlockerPids(locked);
       if (!blockers.length) {
         throw Object.assign(new Error('Files are locked but no owning process could be identified.'), { exitCode: 3 });
@@ -547,16 +658,30 @@ async function main() {
       await killBlockers(blockers);
       locked = probeLocked(locked);
     }
-    if (locked.length) {
+    if (locked.length && !flags.dryRun) {
       locked.forEach((f) => stdout.write(`     ${red(f)}\n`));
       throw Object.assign(new Error(
         'Package files are locked. Close OpenCode (or re-run with --kill-blockers) and try again.'),
         { exitCode: 3 });
     }
+  } else {
+    stdout.write(`   ${green(TICK)} no blocking locks\n`);
   }
-  stdout.write(`   ${green(TICK)} no blocking locks\n`);
 
-  if (rl) {
+  if (flags.dryRun) {
+    section('Plan (dry run — nothing will change)');
+    const pm = flags.pm ?? availablePackageManagers()[0] ?? '(none found)';
+    for (const p of plans) {
+      if (p.upToDate) { stdout.write(`   ${dim('-')} ${p.name} ${dim('skip (current)')}\n`); continue; }
+      for (const root of wrapperRoots(cache.path, p.name)) stdout.write(`   ${dim('-')} would delete ${root}\n`);
+      stdout.write(`   ${'+'} would install ${p.name}@${p.version} ${dim(`(${pm})`)}\n`);
+    }
+    if (locked.length) stdout.write(`   ${yellow('!')} locked right now — a real run would abort until OpenCode is closed\n`);
+    stdout.write(`\n   ${dim('dry run complete — no files changed')}\n\n`);
+    return 0;
+  }
+
+  if (rl && !flags.yes) {
     const ok = await confirm(`Update ${todo.length} plugin(s)? Old cached versions will be deleted.`);
     if (!ok) { stdout.write(`\n   ${dim('aborted by user')}\n\n`); return 0; }
   }
