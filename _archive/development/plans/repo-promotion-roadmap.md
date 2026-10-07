@@ -34,7 +34,7 @@ A standalone, cross-platform CLI that updates OpenCode npm plugins by resetting 
 - **APPROVED — in-flow build approval:** detect pnpm's `ERR_PNPM_IGNORED_BUILDS` after `pnpm add` and run `pnpm approve-builds` in the wrapper (or retry with the allow-build flag) so the update completes inside the tool instead of leaving the user at an external prompt. No known alternative handles this — our clearest functional differentiator.
 - **REJECTED — pre-emptive allow-list:** do not write `onlyBuiltDependencies` before install.
 - **REJECTED — automatic atomic swap:** keep delete-then-install; no temp-dir + swap.
-- **REJECTED — subprocess changes:** keep `shell: true`; the `DEP0190` deprecation warning is accepted for now.
+- **APPROVED — shell-free subprocesses:** replace `shell: true` with an explicit `cmd.exe /d /c` invocation on Windows; removes the `DEP0190` deprecation warning and the unescaped-argument risk.
 - **REJECTED — workspace isolation:** no special handling for pnpm's `pnpm-workspace.yaml` side effects in v1.
 
 ### P1 — Version control surface

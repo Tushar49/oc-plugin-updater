@@ -10,11 +10,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - MIT `LICENSE`, package metadata (`repository`, `homepage`, `bugs`), and a `prepublishOnly` syntax gate.
 - Repo promotion roadmap in `_archive/development/plans/` (dev branch only).
+- In-flow pnpm build approval: on `ERR_PNPM_IGNORED_BUILDS`, the run offers to execute `approve-builds` in the wrapper so the update completes without an external prompt.
 
 ### Changed
 
 - Project renamed to **`oc-plugin-updater`** across package name, bin, banner, and docs — the previous npm name was taken and deprecated.
 - Commit metadata normalized to a neutral project identity with no co-author trailers.
+- Subprocesses no longer use `shell: true`; on Windows package-manager commands run through an explicit `cmd.exe /d /c` (removes the `DEP0190` deprecation warning and unescaped-argument risk).
 
 ### Planned
 
