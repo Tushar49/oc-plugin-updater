@@ -21,6 +21,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Commit metadata normalized to a neutral project identity with no co-author trailers.
 - Subprocesses no longer use `shell: true`; on Windows package-manager commands run through an explicit `cmd.exe /d /c` (removes the `DEP0190` deprecation warning and unescaped-argument risk).
 - `--list` exits non-zero when any registry lookup fails; `--yes` no longer prompts for pnpm build approval (prints the manual command instead).
+- Plugin specs are validated before any registry-URL or cache-path use, closing a path-traversal vector from config-supplied specs.
 
 ### Planned
 

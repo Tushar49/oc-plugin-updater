@@ -43,7 +43,7 @@ A standalone, cross-platform CLI that updates OpenCode npm plugins by resetting 
 - `--set <plugin>@<version>`: pin an exact target; `--only <plugin>` restricts processing to one plugin.
 - `--dry-run`: print the full plan (deletes, installs) and change nothing.
 - `--yes`: non-interactive confirmation for CI.
-- Hardening: package name/version charset validation (registry-URL + shell injection), scoped-name URL encoding via `replaceAll`, non-interactive `--yes` build approval, non-zero exit when a catalogue lookup fails.
+- Hardening: package name/version charset validation (registry-URL + shell injection), spec validated before any path/URL use (path-traversal), scoped-name URL encoding via `replaceAll`, non-interactive `--yes` build approval, non-zero exit when a catalogue lookup fails.
 
 ### P2 — Interactive TUI picker
 - Arrow/j/k navigation, `/` filter-as-you-type, `Space` multi-select, `Enter` confirm, `Esc` cancel, `?` help.

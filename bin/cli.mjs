@@ -601,6 +601,7 @@ async function main() {
   let plans = [];
   for (const spec of specs) {
     const { name, ref } = splitSpec(spec);
+    assertSafeSpec(name, ref); // validated before any path or registry-URL use
     const target = await resolveTarget(name, ref);
     let installed = null;
     for (const root of wrapperRoots(cache.path, name)) {
