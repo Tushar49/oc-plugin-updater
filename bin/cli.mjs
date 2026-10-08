@@ -259,8 +259,19 @@ function splitSpec(spec) {
   return { name: spec.slice(0, at), ref: spec.slice(at + 1) };
 }
 
+const SAFE_PACKAGE_NAME = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/i;
+const SAFE_VERSION_REF = /^[A-Za-z0-9._+-]+$/;
+
+// Reject anything that could break the registry URL or be interpreted by a
+// shell (Windows runs package managers through cmd.exe /c).
+function assertSafeSpec(name, ref) {
+  if (!SAFE_PACKAGE_NAME.test(name) || !SAFE_VERSION_REF.test(ref)) {
+    throw Object.assign(new Error(`Unsafe package reference: ${name}@${ref}`), { exitCode: 2 });
+  }
+}
+
 async function resolveTarget(name, ref) {
-  const url = `https://registry.npmjs.org/-/package/${name.replace('/', '%2F')}/dist-tags`;
+  const url = `https://registry.npmjs.org/-/package/${name.replaceAll('/', '%2F')}/dist-tags`;
   try {
     const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
     if (res.ok) {
@@ -408,7 +419,7 @@ const IGNORED_BUILDS = /ERR_PNPM_IGNORED_BUILDS|Ignored build scripts/i;
 async function resolveIgnoredBuilds(pm, dir, name) {
   stdout.write(`   ${yellow('!')} ${pm} blocked build scripts for ${name} (dependency build approval)\n`);
   const approveCmd = pm === 'npm' ? 'rebuild' : 'approve-builds';
-  if (!rl) {
+  if (!rl || flags.yes) {
     stdout.write(`     ${dim(`run manually: cd "${dir}" && ${pm} ${approveCmd}`)}\n`);
     return false;
   }
@@ -426,6 +437,7 @@ async function resolveIgnoredBuilds(pm, dir, name) {
 }
 
 async function installWith(pm, name, version, dir) {
+  assertSafeSpec(name, version);
   writeFileSync(join(dir, 'package.json'),
     JSON.stringify({ name: name + '-opencode-plugin-wrapper', version: '0.0.0', private: true }, null, 2));
   const args = ['add', `${name}@${version}`, ...(SAVE_EXACT[pm] ?? ['--save-exact'])];
@@ -518,7 +530,7 @@ function compareSemver(a, b) {
 }
 
 async function fetchVersionList(name) {
-  const url = `https://registry.npmjs.org/${name.replace('/', '%2F')}`;
+  const url = `https://registry.npmjs.org/${name.replaceAll('/', '%2F')}`;
   try {
     const res = await fetch(url, {
       headers: { Accept: 'application/vnd.npm.install-v1+json' },
@@ -535,9 +547,10 @@ async function fetchVersionList(name) {
 const CATALOGUE_CAP = 30;
 
 async function printCatalogue(plans, showAll) {
+  let ok = true;
   for (const p of plans) {
     const info = await fetchVersionList(p.name);
-    if (!info) { stdout.write(`\n   ${red(CROSS)} ${p.name}: registry lookup failed\n`); continue; }
+    if (!info) { ok = false; stdout.write(`\n   ${red(CROSS)} ${p.name}: registry lookup failed\n`); continue; }
     const tagByVersion = new Map();
     for (const [tag, ver] of Object.entries(info.tags)) if (!tagByVersion.has(ver)) tagByVersion.set(ver, tag);
     const sorted = info.versions.slice().sort((a, b) => compareSemver(b, a));
@@ -556,6 +569,7 @@ async function printCatalogue(plans, showAll) {
       stdout.write(`     ${dim(`… ${sorted.length - shown.length} more (use --all)`)}\n`);
     }
   }
+  return ok;
 }
 
 /* ---------------------------------------------------------------- main ---- */
@@ -613,17 +627,19 @@ async function main() {
     const at = entry.lastIndexOf('@');
     if (at <= 0) throw Object.assign(new Error(`Invalid --set value: ${entry} (expected name@version)`), { exitCode: 2 });
     const setName = entry.slice(0, at);
+    const setRef = entry.slice(at + 1);
     const hit = plans.find((p) => p.name === setName);
     if (!hit) throw Object.assign(new Error(`--set: ${setName} is not a selected/configured plugin.`), { exitCode: 2 });
-    const t = await resolveTarget(setName, entry.slice(at + 1));
+    assertSafeSpec(setName, setRef);
+    const t = await resolveTarget(setName, setRef);
     hit.version = t.version;
     hit.tag = t.tag;
     hit.upToDate = hit.installed === hit.version;
   }
 
   if (flags.list) {
-    await printCatalogue(plans, flags.all);
-    return 0;
+    const ok = await printCatalogue(plans, flags.all);
+    return ok ? 0 : 1;
   }
 
   const nameW = Math.max(...plans.map((p) => p.name.length), 7);
