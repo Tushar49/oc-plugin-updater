@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `--list` version catalogue with `(current)`, `(latest)`, dist-tag, and `(not published)` markers (`--all` for the full list).
 - `--set <name@version>`, `--only <name>`, `--dry-run`, and `--yes` for scripted and non-interactive runs.
 - `--pick`: interactive version picker (arrow/j/k navigation, `/` filter, `Space` select, `Enter` confirm, `Esc` cancel, `?` help) with a `--selftest` harness for its pure logic.
+- Maintenance toolkit: `--clean` (orphan prune), `--remove <name>`, `--backup`/`--rollback` (failed installs auto-restore the previous wrapper), `--doctor` (paths, v1/v2 generation, cache layout, binaries, locks, package managers), and `--registry <url>` for mirror support.
 - Spec classification: local-path/URL plugin specs (v2 `./plugin/local.ts`, `file:`/URLs) are skipped with a visible note; v1 tuple entries (`[pkg, options]`) are read instead of silently ignored.
 - Strict package name/version validation for `--set` and installs, blocking registry-URL and shell-metacharacter injection.
 

@@ -77,6 +77,23 @@ node bin/cli.mjs --pick --dry-run       # try the picker without touching the ca
 `Space` sets the target for the highlighted plugin, `Enter` confirms, `Esc` cancels, `?` shows help.
 Unpicked plugins keep their default target. It requires a TTY; in scripts, use `--set` instead.
 
+### Maintenance toolkit
+
+```bash
+node bin/cli.mjs --doctor                 # what does this machine look like?
+node bin/cli.mjs --clean --dry-run        # which cached wrappers are orphans?
+node bin/cli.mjs --clean                  # delete orphans (asks; --yes to skip)
+node bin/cli.mjs --remove old-plugin      # drop a plugin's wrappers, keep config read-only
+node bin/cli.mjs --rollback               # undo the last backed-up update
+node bin/cli.mjs --backup                 # update with a safety snapshot first
+node bin/cli.mjs --registry http://localhost:4873   # point lookups+installs at a mirror
+```
+
+`--backup` stores the previous wrapper in `oc-plugin-updater-backups/` next to the
+cache directory. If an install fails, the previous wrapper is restored automatically;
+`--rollback` restores the newest backup per wrapper on demand. Destructive modes
+(`--clean`, `--remove`, `--rollback`) refuse to run non-interactively without `--yes`.
+
 ### Flags
 
 | Flag | Description |
@@ -85,6 +102,12 @@ Unpicked plugins keep their default target. It requires a TTY; in scripts, use `
 | `--pick` | Choose target versions in an interactive picker (requires a TTY). |
 | `--set <name@version>` | Target an exact version/tag for a plugin (repeatable). |
 | `--only <name>` | Process only the named plugin (repeatable). |
+| `--clean` | Remove cached wrappers whose plugin is no longer in any config. |
+| `--remove <name>` | Delete a plugin's cached wrappers (config is never touched). |
+| `--backup` | Snapshot wrappers to a backup dir before replacing them; a failed install auto-restores. |
+| `--rollback` | Restore the most recent backup of each updated wrapper. |
+| `--doctor` | Report paths, config generation (v1/v2), cache layout, locks, tools. |
+| `--registry <url>` | Use a custom npm registry (mirror) for lookups and installs. |
 | `--dry-run` | Show what would change; touches nothing. |
 | `--yes`, `-y` | Skip the confirmation prompt (non-interactive). |
 | `--all` | With `--list`, show every version (default caps at 30). |

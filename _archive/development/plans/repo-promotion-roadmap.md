@@ -78,12 +78,13 @@ A standalone, cross-platform CLI that updates OpenCode npm plugins by resetting 
 **Non-goals:** editing config pins, porting the plugin API, TUI.
 **Acceptance:** a mixed v2 config (npm string, `{ package }`, local path, v1 tuple) runs without abort; local specs are skipped with notes; `--list` / `--dry-run` match; install verified on a real v2 machine.
 
-### P3 — Maintenance toolkit
-- `--clean`: remove cache wrappers for plugins no longer in any config (orphan prune).
-- `--remove <plugin>`: uninstall a plugin from the cache (and optionally from the config with explicit consent).
-- `--backup` / `--rollback`: snapshot the previous wrapper before replacing; restore on failure.
-- `--doctor`: report detected paths, layout, config generation (v1/v2), lock owners, and stale manifest pins.
-- `--offline`: operate with a local registry mirror / cached manifest.
+### P3 — Maintenance toolkit (shipped 2026-10-19)
+- `--clean`: remove cache wrappers for plugins no longer in any config (orphan prune). Only wrapper-shaped dirs are touched; `node_modules` and dot-dirs are skipped.
+- `--remove <plugin>`: uninstall a plugin from the cache; the config stays read-only (the tool prints a reminder to edit it yourself).
+- `--backup` / `--rollback`: snapshot wrappers to `<cache>/../oc-plugin-updater-backups/` before replacing; a failed install auto-restores the previous wrapper; `--rollback` restores the newest backup per wrapper.
+- `--doctor`: reports paths, config generation (v1/v2), files read, `opencode`/`opencode2` binaries + versions, cache layout (v1 packages / v2 npm), wrappers, locks, package managers, leftovers.
+- `--registry <url>`: covers the "local registry mirror" half of `--offline` (lookups + installs). Cached-manifest offline mode remains planned.
+- Destructive modes refuse to run non-interactively without `--yes`; `--dry-run` plans without touching; locks abort with exit 3.
 
 ### P4 — Integrations & parity
 - `--notify`: check on a schedule (Task Scheduler / launchd / cron sample) and print/desktop-notify when updates exist.
