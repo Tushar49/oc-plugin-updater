@@ -61,7 +61,7 @@ function indent(text, prefix = '     ') {
 
 /* ------------------------------------------------------------ cli parsing -- */
 
-const flags = { killBlockers: false, help: false, configDir: null, cacheDir: null, pm: null, list: false, dryRun: false, yes: false, all: false, set: [], only: [] };
+const flags = { killBlockers: false, help: false, configDir: null, cacheDir: null, pm: null, list: false, dryRun: false, yes: false, all: false, pick: false, selftest: false, set: [], only: [] };
 {
   const args = argv.slice(2);
   for (let i = 0; i < args.length; i++) {
@@ -85,6 +85,8 @@ const flags = { killBlockers: false, help: false, configDir: null, cacheDir: nul
     else if (key === '--dry-run') flags.dryRun = true;
     else if (key === '--yes' || key === '-y') flags.yes = true;
     else if (key === '--all') flags.all = true;
+    else if (key === '--pick') flags.pick = true;
+    else if (key === '--selftest') flags.selftest = true;
     else if (key === '--set') flags.set.push(takeValue());
     else if (key === '--only') flags.only.push(takeValue());
     else {
@@ -94,6 +96,14 @@ const flags = { killBlockers: false, help: false, configDir: null, cacheDir: nul
   }
   if (flags.pm && !['pnpm', 'npm'].includes(flags.pm)) {
     console.error(`Invalid --pm value: ${flags.pm} (expected: pnpm or npm)`);
+    exit(2);
+  }
+  if (flags.pick && flags.list) {
+    console.error('--pick cannot be combined with --list.');
+    exit(2);
+  }
+  if (flags.pick && flags.yes) {
+    console.error('--pick cannot be combined with --yes (the picker is interactive).');
     exit(2);
   }
 }
@@ -107,6 +117,7 @@ Usage:
 
 Options:
   --list               print the full version catalogue for each plugin and exit
+  --pick               choose versions interactively (arrows, space, enter; needs a TTY)
   --set <name@ver>     target an exact version/tag for a plugin (repeatable)
   --only <name>        process only the named plugin (repeatable)
   --dry-run            show what would change; touch nothing
@@ -237,7 +248,14 @@ function readPluginSpecs(configDir) {
   for (const file of ['opencode.jsonc', 'opencode.json', 'tui.json', 'tui.jsonc']) {
     const path = join(configDir, file);
     if (!existsSync(path)) continue;
-    const cfg = parseJsonc(readFileSync(path, 'utf8'));
+    const raw = readFileSync(path, 'utf8');
+    if (!raw.trim()) continue; // some tools leave empty placeholder configs behind
+    let cfg;
+    try {
+      cfg = parseJsonc(raw);
+    } catch (err) {
+      throw Object.assign(new Error(`Cannot parse ${path}: ${err.message}`), { exitCode: 2 });
+    }
     for (const spec of cfg.plugin ?? []) push(spec);  // v1: array of strings
     for (const spec of cfg.plugins ?? []) push(spec); // v2: array of objects (defensive: strings too)
   }
@@ -572,6 +590,291 @@ async function printCatalogue(plans, showAll) {
   return ok;
 }
 
+/* --------------------------------------------------------------- picker --- */
+
+function parseKeys(input) {
+  const keys = [];
+  const arrows = { A: 'up', B: 'down', C: 'right', D: 'left', H: 'home', F: 'end' };
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (ch === '\x1b') {
+      const rest = input.slice(i);
+      const csi = /^\x1b\[([0-9;]*)([A-Za-z~])/.exec(rest);
+      const ss3 = csi ? null : /^\x1bO([A-Za-z])/.exec(rest);
+      const m = csi || ss3;
+      if (m) {
+        const final = csi ? m[2] : m[1];
+        if (arrows[final]) keys.push({ type: arrows[final] });
+        else if (csi && final === '~' && m[1] === '5') keys.push({ type: 'pageup' });
+        else if (csi && final === '~' && m[1] === '6') keys.push({ type: 'pagedown' });
+        else keys.push({ type: 'unknown' });
+        i += m[0].length - 1;
+        continue;
+      }
+      keys.push({ type: 'esc' });
+      continue;
+    }
+    if (ch === '\r' || ch === '\n') keys.push({ type: 'enter' });
+    else if (ch === '\x7f' || ch === '\b') keys.push({ type: 'backspace' });
+    else if (ch === '\x03') keys.push({ type: 'ctrl-c' });
+    else if (ch >= ' ') keys.push({ type: 'char', char: ch });
+  }
+  return keys;
+}
+
+function buildPickerRows(plans, lists, filter = '', showAll = false) {
+  const rows = [];
+  const needle = filter.trim().toLowerCase();
+  plans.forEach((p, pi) => {
+    const info = lists[pi];
+    if (!info) { rows.push({ kind: 'error', plugin: pi, name: p.name }); return; }
+    const tagByVersion = new Map();
+    for (const [tag, ver] of Object.entries(info.tags)) {
+      if (!tagByVersion.has(ver)) tagByVersion.set(ver, tag);
+    }
+    const sorted = info.versions.slice().sort((a, b) => compareSemver(b, a));
+    const nameMatch = Boolean(needle) && p.name.toLowerCase().includes(needle);
+    const matching = needle ? sorted.filter((v) => v.toLowerCase().includes(needle)) : sorted;
+    const versions = nameMatch && !matching.length ? sorted : matching;
+    if (needle && !versions.length) return;
+    rows.push({ kind: 'header', plugin: pi, name: p.name });
+    const shown = showAll ? versions : versions.slice(0, CATALOGUE_CAP);
+    for (const ver of shown) {
+      rows.push({ kind: 'version', plugin: pi, version: ver, tag: tagByVersion.get(ver) ?? null });
+    }
+  });
+  return rows;
+}
+
+const isVersionRow = (r) => Boolean(r) && r.kind === 'version';
+
+function firstVersionRow(rows) {
+  return rows.findIndex(isVersionRow);
+}
+
+function stepCursor(rows, cursor, dir) {
+  let i = cursor + dir;
+  while (i >= 0 && i < rows.length) {
+    if (isVersionRow(rows[i])) return i;
+    i += dir;
+  }
+  return cursor;
+}
+
+function clampCursor(rows, cursor) {
+  if (!rows.length) return -1;
+  const i = Math.min(Math.max(cursor, 0), rows.length - 1);
+  if (isVersionRow(rows[i])) return i;
+  for (let d = 1; d < rows.length; d++) {
+    if (isVersionRow(rows[i + d])) return i + d;
+    if (isVersionRow(rows[i - d])) return i - d;
+  }
+  return -1;
+}
+
+function createPickerState(rows) {
+  return {
+    rows, cursor: firstVersionRow(rows), filter: '', filterMode: false,
+    help: false, selected: new Map(), confirmed: false, cancelled: false,
+  };
+}
+
+function pickerReduce(state, key) {
+  const next = { ...state, selected: new Map(state.selected) };
+  if (key.type === 'ctrl-c') { next.cancelled = true; return next; }
+  if (key.type === 'esc') {
+    if (state.filterMode) { next.filterMode = false; next.filter = ''; }
+    else next.cancelled = true;
+    return next;
+  }
+  if (key.type === 'enter') {
+    if (state.filterMode) next.filterMode = false;
+    else next.confirmed = true;
+    return next;
+  }
+  if (key.type === 'up' || key.type === 'down' || key.type === 'pageup' || key.type === 'pagedown') {
+    const dir = key.type === 'up' || key.type === 'pageup' ? -1 : 1;
+    const steps = key.type === 'pageup' || key.type === 'pagedown' ? 10 : 1;
+    let cursor = state.cursor;
+    for (let n = 0; n < steps; n++) cursor = stepCursor(state.rows, cursor, dir);
+    next.cursor = cursor;
+    return next;
+  }
+  if (state.filterMode) {
+    if (key.type === 'backspace') next.filter = state.filter.slice(0, -1);
+    else if (key.type === 'char') next.filter = state.filter + key.char;
+    return next;
+  }
+  if (key.type !== 'char') return next;
+  if (key.char === 'j') next.cursor = stepCursor(state.rows, state.cursor, 1);
+  else if (key.char === 'k') next.cursor = stepCursor(state.rows, state.cursor, -1);
+  else if (key.char === '/') next.filterMode = true;
+  else if (key.char === '?') next.help = !state.help;
+  else if (key.char === 'q' || key.char === 'Q') next.cancelled = true;
+  else if (key.char === ' ') {
+    const row = state.rows[state.cursor];
+    if (isVersionRow(row)) {
+      if (state.selected.get(row.plugin)?.version === row.version) next.selected.delete(row.plugin);
+      else next.selected.set(row.plugin, { version: row.version, tag: row.tag });
+    }
+  }
+  return next;
+}
+
+function renderPicker(state, plans) {
+  const lines = [];
+  lines.push(`${bold('oc-plugin-updater')} ${dim('select versions')}`);
+  lines.push(dim('up/down or j/k move · space select · enter confirm · esc cancel · / filter · ? help'));
+  if (state.filterMode || state.filter) {
+    lines.push(`${dim('filter:')} ${state.filter}${state.filterMode ? cyan('_') : ''}`);
+  }
+  lines.push('');
+  for (const [i, r] of state.rows.entries()) {
+    if (r.kind === 'header') {
+      const p = plans[r.plugin];
+      const picked = state.selected.get(r.plugin);
+      const target = picked ? picked.version : p.version;
+      const mark = picked ? green('*') : dim('o');
+      const installed = p.installed ? `${dim('installed')} ${p.installed}` : dim('not installed');
+      lines.push(`${mark} ${bold(p.name)}  ${installed}  ${dim('target')} ${bold(target)}`);
+    } else if (r.kind === 'error') {
+      lines.push(`  ${red(CROSS)} ${r.name} ${dim('registry lookup failed (keeps default target)')}`);
+    } else {
+      const p = plans[r.plugin];
+      const picked = state.selected.get(r.plugin)?.version === r.version;
+      const marks = [];
+      if (r.version === p.installed) marks.push(dim('current'));
+      if (r.tag) marks.push(green(r.tag));
+      if (picked) marks.push(green('picked'));
+      const cursor = i === state.cursor;
+      lines.push(`${cursor ? cyan('>') : ' '} ${picked ? green('*') : ' '} ${r.version}${marks.length ? '  ' + marks.join(' ') : ''}`);
+    }
+  }
+  if (state.help) {
+    lines.push('');
+    lines.push(dim('space sets the target version for the plugin under the cursor; unpicked plugins keep their default target.'));
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+function applyPickerSelection(plans, selected) {
+  for (const [pi, pick] of selected) {
+    const p = plans[pi];
+    if (!p) continue;
+    p.version = pick.version;
+    p.tag = pick.tag;
+    p.upToDate = p.installed === pick.version;
+  }
+}
+
+async function runPicker(plans, lists, showAll) {
+  if (!stdin.isTTY || !stdout.isTTY) {
+    throw Object.assign(
+      new Error('--pick needs an interactive terminal (stdin and stdout must be TTYs).'),
+      { exitCode: 2, detail: 'Use --set name@version or --list in non-interactive shells.' },
+    );
+  }
+  let state = createPickerState(buildPickerRows(plans, lists, '', showAll));
+  if (state.cursor < 0) {
+    throw Object.assign(new Error('No selectable versions (every registry lookup failed).'), { exitCode: 1 });
+  }
+  const hadRaw = typeof stdin.setRawMode === 'function';
+  if (hadRaw) stdin.setRawMode(true);
+  stdin.resume();
+  stdin.setEncoding('utf8');
+  stdout.write('\x1b[?25l');
+  const restore = () => {
+    if (hadRaw) { try { stdin.setRawMode(false); } catch { /* ignore */ } }
+    if (rl) rl.resume();
+    stdout.write('\x1b[?25h');
+  };
+  try {
+    for (;;) {
+      stdout.write('\x1b[2J\x1b[H' + renderPicker(state, plans) + '\n');
+      const chunk = await new Promise((resolve) => {
+        const onData = (data) => { stdin.off('data', onData); resolve(String(data)); };
+        stdin.on('data', onData);
+      });
+      for (const key of parseKeys(chunk)) {
+        state = pickerReduce(state, key);
+        state.rows = buildPickerRows(plans, lists, state.filter, showAll);
+        state.cursor = clampCursor(state.rows, state.cursor);
+        if (state.cancelled || state.confirmed) break;
+      }
+      if (state.cancelled || state.confirmed) break;
+    }
+  } finally {
+    restore();
+  }
+  return state.cancelled ? null : state.selected;
+}
+
+/* -------------------------------------------------------------- selftest -- */
+
+function runSelftest() {
+  let passed = 0;
+  let failed = 0;
+  const check = (name, ok) => {
+    if (ok) { passed++; stdout.write(`   ${green(TICK)} ${name}\n`); }
+    else { failed++; stdout.write(`   ${red(CROSS)} ${name}\n`); }
+  };
+
+  check('parseKeys: up arrow', parseKeys('\x1b[A')[0]?.type === 'up');
+  check('parseKeys: two keys in one chunk', parseKeys('\x1b[B\x1b[A').map((k) => k.type).join(',') === 'down,up');
+  check('parseKeys: bare escape', parseKeys('\x1b')[0]?.type === 'esc');
+  check('parseKeys: enter', parseKeys('\r')[0]?.type === 'enter');
+  check('parseKeys: backspace', parseKeys('\x7f')[0]?.type === 'backspace');
+  check('parseKeys: printable char', parseKeys('a')[0]?.char === 'a');
+
+  const plans = [
+    { name: 'alpha', version: '2.0.0', installed: '1.0.0' },
+    { name: 'beta', version: '1.5.0', installed: null },
+  ];
+  const lists = [
+    { versions: ['1.0.0', '2.0.0', '1.5.0'], tags: { latest: '2.0.0' } },
+    { versions: ['1.5.0', '0.9.0'], tags: { latest: '1.5.0' } },
+  ];
+  const rows = buildPickerRows(plans, lists, '', false);
+  check('rows: one header per plugin', rows.filter((r) => r.kind === 'header').length === 2);
+  check('rows: versions sorted descending', rows.find((r) => r.kind === 'version' && r.plugin === 0)?.version === '2.0.0');
+  check('rows: dist-tag attached', rows.find((r) => r.kind === 'version' && r.plugin === 1)?.tag === 'latest');
+  check('rows: filter narrows versions', buildPickerRows(plans, lists, '1.5', false).filter((r) => r.kind === 'version').every((r) => r.version.includes('1.5')));
+
+  let state = createPickerState(rows);
+  check('state: cursor starts on a version', isVersionRow(rows[state.cursor]));
+  const start = state.cursor;
+  state = pickerReduce(state, { type: 'down' });
+  check('reduce: down moves cursor', state.cursor !== start && isVersionRow(rows[state.cursor]));
+  const row = state.rows[state.cursor];
+  state = pickerReduce(state, { type: 'char', char: ' ' });
+  check('reduce: space selects version', state.selected.get(row.plugin)?.version === row.version);
+  state = pickerReduce(state, { type: 'char', char: ' ' });
+  check('reduce: space toggles selection off', !state.selected.has(row.plugin));
+  state = pickerReduce(state, { type: 'char', char: '/' });
+  check('reduce: slash enters filter', state.filterMode === true);
+  state = pickerReduce(state, { type: 'char', char: 'x' });
+  check('reduce: filter appends chars', state.filter === 'x');
+  state = pickerReduce(state, { type: 'backspace' });
+  check('reduce: backspace removes chars', state.filter === '');
+  state = pickerReduce(state, { type: 'esc' });
+  check('reduce: esc leaves filter mode', state.filterMode === false && state.cancelled === false);
+  state = pickerReduce(state, { type: 'esc' });
+  check('reduce: esc cancels', state.cancelled === true);
+  state = pickerReduce(createPickerState(rows), { type: 'enter' });
+  check('reduce: enter confirms', state.confirmed === true);
+  state = pickerReduce(createPickerState(rows), { type: 'ctrl-c' });
+  check('reduce: ctrl-c cancels', state.cancelled === true);
+
+  const applied = plans.map((p) => ({ ...p }));
+  applyPickerSelection(applied, new Map([[0, { version: '1.5.0', tag: null }]]));
+  check('apply: sets picked version', applied[0].version === '1.5.0');
+  check('apply: recomputes upToDate', applied[0].upToDate === false);
+
+  stdout.write(`\n   selftest: ${passed} passed, ${failed} failed\n`);
+  return failed === 0;
+}
+
 /* ---------------------------------------------------------------- main ---- */
 
 async function main() {
@@ -641,6 +944,16 @@ async function main() {
   if (flags.list) {
     const ok = await printCatalogue(plans, flags.all);
     return ok ? 0 : 1;
+  }
+
+  if (flags.pick) {
+    const lists = await Promise.all(plans.map((p) => fetchVersionList(p.name)));
+    const selected = await runPicker(plans, lists, flags.all);
+    if (!selected) {
+      stdout.write(`\n   ${dim('aborted by user')}\n\n`);
+      return 0;
+    }
+    applyPickerSelection(plans, selected);
   }
 
   const nameW = Math.max(...plans.map((p) => p.name.length), 7);
@@ -734,6 +1047,8 @@ async function main() {
   stdout.write(`\n   ${green(bold(TICK))} done — ${dim('restart OpenCode to load the new versions')}\n\n`);
   return 0;
 }
+
+if (flags.selftest) exit(runSelftest() ? 0 : 1);
 
 main()
   .then((code) => exit(code))
