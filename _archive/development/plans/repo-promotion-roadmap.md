@@ -45,9 +45,10 @@ A standalone, cross-platform CLI that updates OpenCode npm plugins by resetting 
 - `--yes`: non-interactive confirmation for CI.
 - Hardening: package name/version charset validation (registry-URL + shell injection), spec validated before any path/URL use (path-traversal), scoped-name URL encoding via `replaceAll`, non-interactive `--yes` build approval, non-zero exit when a catalogue lookup fails.
 
-### P2 — Interactive TUI picker
+### P2 — Interactive TUI picker (shipped: `--pick`)
 - Arrow/j/k navigation, `/` filter-as-you-type, `Space` multi-select, `Enter` confirm, `Esc` cancel, `?` help.
 - Colour chips for `latest`/`beta`/`current`; `NO_COLOR` + non-TTY fall back to P1 flags.
+- Shipped as a zero-dependency raw-mode picker with a pure reducer; `--selftest` covers key parsing, row building, cursor/filter/select/confirm and target application (23 assertions). Remaining: one manual TTY pass.
 - Engine options researched: `@opentui/core` (host-identical look; ships native binaries → lock/kill friction) vs zero-dep ANSI raw-mode picker. **Decision: zero-dep picker first**; opentui spike behind `--tui=opentui`.
 
 ### P3 — Maintenance toolkit

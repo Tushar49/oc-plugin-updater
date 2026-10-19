@@ -22,7 +22,7 @@ OpenCode installs npm plugins with Bun at startup and caches them locally. Once 
 
 `oc-plugin-updater` is a small, dependency-free Node CLI that:
 
-1. **Reads** the plugin list from your OpenCode config — `plugin` (v1) and `plugins` (v2) shapes, across `opencode.jsonc`, `opencode.json`, `tui.json`, `cli.json`.
+1. **Reads** the plugin list from your OpenCode config — the `plugin` (v1) and `plugins` (v2) shapes, across `opencode.jsonc` / `opencode.json` and the `tui.json(c)` variants.
 2. **Resolves** the target version from the npm registry and shows `(current)` vs `(latest)` per plugin.
 3. **Probes** for locked package files *before* deleting anything.
 4. **Reinstalls** with **pnpm or npm** — you choose.
@@ -66,11 +66,23 @@ node bin/cli.mjs --dry-run              # show the plan, change nothing
 node bin/cli.mjs --set oh-my-openagent@5.1.20 --only oh-my-openagent --dry-run
 ```
 
+### Pick versions interactively
+
+```bash
+node bin/cli.mjs --pick                 # choose targets with arrow keys
+node bin/cli.mjs --pick --dry-run       # try the picker without touching the cache
+```
+
+`--pick` opens a full-screen picker: `↑`/`↓` (or `j`/`k`) move, `/` filters versions,
+`Space` sets the target for the highlighted plugin, `Enter` confirms, `Esc` cancels, `?` shows help.
+Unpicked plugins keep their default target. It requires a TTY; in scripts, use `--set` instead.
+
 ### Flags
 
 | Flag | Description |
 | --- | --- |
 | `--list` | Print the full version catalogue per plugin and exit. |
+| `--pick` | Choose target versions in an interactive picker (requires a TTY). |
 | `--set <name@version>` | Target an exact version/tag for a plugin (repeatable). |
 | `--only <name>` | Process only the named plugin (repeatable). |
 | `--dry-run` | Show what would change; touches nothing. |
@@ -106,6 +118,10 @@ Both config generations are read:
 | Terminal settings file | layered | single global |
 
 Config fields that v2 keeps for compatibility are still detected; the tool does not care which generation is installed.
+
+**Known gap:** local-path plugin specs (for example `./plugin/local.ts` in a v2 `plugins` entry) are not npm
+packages and are currently rejected instead of being skipped. Registry packages are supported; local specs are
+tracked for the v2-compatibility work.
 
 ## Safety model
 

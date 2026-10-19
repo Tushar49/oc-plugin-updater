@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - In-flow pnpm build approval: on `ERR_PNPM_IGNORED_BUILDS`, the run offers to execute `approve-builds` in the wrapper so the update completes without an external prompt.
 - `--list` version catalogue with `(current)`, `(latest)`, dist-tag, and `(not published)` markers (`--all` for the full list).
 - `--set <name@version>`, `--only <name>`, `--dry-run`, and `--yes` for scripted and non-interactive runs.
+- `--pick`: interactive version picker (arrow/j/k navigation, `/` filter, `Space` select, `Enter` confirm, `Esc` cancel, `?` help) with a `--selftest` harness for its pure logic.
 - Strict package name/version validation for `--set` and installs, blocking registry-URL and shell-metacharacter injection.
 
 ### Changed
@@ -23,11 +24,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `--list` exits non-zero when any registry lookup fails; `--yes` no longer prompts for pnpm build approval (prints the manual command instead).
 - Plugin specs are validated before any registry-URL or cache-path use, closing a path-traversal vector from config-supplied specs.
 
+### Fixed
+
+- Empty config files (for example a 0-byte `tui.json` placeholder) are skipped instead of crashing with `Unexpected end of JSON input`; unparsable configs now name the file in the error.
+
 ### Planned
 
-- Version catalogue: list all published versions per plugin, with `(current)` and `(latest)` markers.
-- Interactive version picker (TUI) with filter and multi-select.
-- Test suite + CI matrix (Windows / macOS / Linux × Node 18 / 20 / 22).
+- Unit test suite + CI matrix (Windows / macOS / Linux × Node 18 / 20 / 22).
+- v2 compatibility: skip local-path plugin specs and handle v1 tuple entries instead of rejecting them.
 
 ## [0.1.0] - 2026-10-08
 
@@ -36,7 +40,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Single-file cross-platform CLI (`bin/cli.mjs`) with zero runtime dependencies (Node >= 18).
 - Config discovery: `OPENCODE_CONFIG_DIR`, `dirname(OPENCODE_CONFIG)`, `$XDG_CONFIG_HOME/opencode`, `~/.config/opencode`, `%APPDATA%\opencode`, `%LOCALAPPDATA%\opencode`, plus an interactive prompt fallback.
 - Package-cache discovery: `$XDG_CACHE_HOME/opencode/packages`, `~/.cache/opencode/packages`, `%LOCALAPPDATA%\opencode\packages`, `%APPDATA%\opencode\packages`.
-- Reads both OpenCode config generations: v1 `plugin` and v2 `plugins` (strings and objects), across `opencode.jsonc`, `opencode.json`, `tui.json`, `cli.json`.
+- Reads both OpenCode config generations: v1 `plugin` and v2 `plugins` (strings and objects), across `opencode.jsonc`, `opencode.json`, `tui.json`, and `tui.jsonc`.
 - Version resolution from npm dist-tags with `(current)` / `(latest)` markers.
 - Pre-deletion lock probe with clean abort (exit code `3`).
 - `--kill-blockers`: Windows (`Get-Process` module scan + `taskkill`) and Unix (`lsof` + signals), with TTY confirmation.
