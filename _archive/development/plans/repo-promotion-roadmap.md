@@ -61,11 +61,19 @@ A standalone, cross-platform CLI that updates OpenCode npm plugins by resetting 
 - `webdex-uk/opencode-remote-config-auto-updater-plugin`: config git-sync only; not a v2 updater.
 
 **Scope:**
-- Classify specs: npm package vs local path/URL; skip non-npm with a visible note instead of aborting (config stays read-only).
-- Handle v1 tuples `[pkg, options]` and v2 objects `{ package, options }`.
-- Verify the v2 package-cache layout before claiming support; add layout detection if it moved.
+- Classify specs: npm package vs local path/URL; skip non-npm with a visible note instead of aborting (config stays read-only). **Shipped 2026-10-19** (`isLocalSpec`, selftest 27/27, mixed-config verified).
+- Handle v1 tuples `[pkg, options]` and v2 objects `{ package, options }`. **Shipped 2026-10-19.**
+- Probe both cache depths: v2 wraps installs in a timestamped directory.
+- Add the v2 cache base (`…/opencode/npm`) to default detection alongside `packages`.
+- Verify install-into-v2 on a real run (not dry) before claiming support.
 - `--doctor`: report config generation (v1/v2), which files were read, and the detected `opencode` / `opencode2` binary.
 - Docs: state v2 semantics (exact pins immutable; `opencode plugin update` exists in v2) and stop implying full parity.
+
+**Live findings (2026-10-19 — this machine now runs v2):**
+- Config is v2 (`plugins`); migration left `tui.json` as a 0-byte placeholder and created `cli.json`.
+- v2 cache layout: `<cache>/opencode/npm/<spec>[@tag]/<timestamp>/node_modules/<pkg>` (v1: `<cache>/opencode/packages/<spec>/node_modules/<pkg>`).
+- Tool against v2 today: dry-run exits 0 with a correct wrapper-delete + install plan, but the installed-version probe misses the timestamped depth ("not installed"), and default cache detection doesn't cover the `npm` base yet.
+- Post-v2 migration, this machine's config manages only `opencode-models-discovery` (oh-my-openagent deliberately removed during migration).
 
 **Non-goals:** editing config pins, porting the plugin API, TUI.
 **Acceptance:** a mixed v2 config (npm string, `{ package }`, local path, v1 tuple) runs without abort; local specs are skipped with notes; `--list` / `--dry-run` match; install verified on a real v2 machine.
