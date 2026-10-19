@@ -14,6 +14,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `--list` version catalogue with `(current)`, `(latest)`, dist-tag, and `(not published)` markers (`--all` for the full list).
 - `--set <name@version>`, `--only <name>`, `--dry-run`, and `--yes` for scripted and non-interactive runs.
 - `--pick`: interactive version picker (arrow/j/k navigation, `/` filter, `Space` select, `Enter` confirm, `Esc` cancel, `?` help) with a `--selftest` harness for its pure logic.
+- Spec classification: local-path/URL plugin specs (v2 `./plugin/local.ts`, `file:`/URLs) are skipped with a visible note; v1 tuple entries (`[pkg, options]`) are read instead of silently ignored.
 - Strict package name/version validation for `--set` and installs, blocking registry-URL and shell-metacharacter injection.
 
 ### Changed
@@ -31,7 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 ### Planned
 
 - Unit test suite + CI matrix (Windows / macOS / Linux × Node 18 / 20 / 22).
-- v2 compatibility: skip local-path plugin specs and handle v1 tuple entries instead of rejecting them.
+- v2 verification on a real v2 install: package-cache layout, `opencode2` binary detection in `--doctor`.
 
 ## [0.1.0] - 2026-10-08
 

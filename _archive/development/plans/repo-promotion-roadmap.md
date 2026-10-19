@@ -51,6 +51,25 @@ A standalone, cross-platform CLI that updates OpenCode npm plugins by resetting 
 - Shipped as a zero-dependency raw-mode picker with a pure reducer; `--selftest` covers key parsing, row building, cursor/filter/select/confirm and target application (23 assertions). Remaining: one manual TTY pass.
 - Engine options researched: `@opentui/core` (host-identical look; ships native binaries → lock/kill friction) vs zero-dep ANSI raw-mode picker. **Decision: zero-dep picker first**; opentui spike behind `--tui=opentui`.
 
+### P2.5 — OpenCode v2 compatibility (next)
+
+**Why:** v2 changed the plugin contract (`{ id, setup }`), moved terminal config to `cli.json`, and treats exact version pins as immutable. The updater stays harness-agnostic (it manages npm packages and the cache), but it must not crash on v2-shaped config.
+
+**What competitors do (verified 2026-10-19):**
+- `alfaoz/opencode-plugin-update-kit` (v2-aware): moves pins in both `plugin` and `plugins` (including `{ package }` entries), runs `opencode plugin update <pkg>` through the v2 binary (`opencode2`, never a bare `opencode`), and relies on v2 re-reading config to reload without a restart.
+- `Glaicer/supercode-plugin-updater`: ships separate v1 (0.3.0) and v2 (1.0.6) builds; rows it cannot update (pinned versions, local paths) are shown but not selectable.
+- `webdex-uk/opencode-remote-config-auto-updater-plugin`: config git-sync only; not a v2 updater.
+
+**Scope:**
+- Classify specs: npm package vs local path/URL; skip non-npm with a visible note instead of aborting (config stays read-only).
+- Handle v1 tuples `[pkg, options]` and v2 objects `{ package, options }`.
+- Verify the v2 package-cache layout before claiming support; add layout detection if it moved.
+- `--doctor`: report config generation (v1/v2), which files were read, and the detected `opencode` / `opencode2` binary.
+- Docs: state v2 semantics (exact pins immutable; `opencode plugin update` exists in v2) and stop implying full parity.
+
+**Non-goals:** editing config pins, porting the plugin API, TUI.
+**Acceptance:** a mixed v2 config (npm string, `{ package }`, local path, v1 tuple) runs without abort; local specs are skipped with notes; `--list` / `--dry-run` match; install verified on a real v2 machine.
+
 ### P3 — Maintenance toolkit
 - `--clean`: remove cache wrappers for plugins no longer in any config (orphan prune).
 - `--remove <plugin>`: uninstall a plugin from the cache (and optionally from the config with explicit consent).

@@ -235,6 +235,10 @@ function parseJsonc(text) {
 function readPluginSpecs(configDir) {
   const specs = new Set();
   const push = (entry) => {
+    if (Array.isArray(entry)) { // v1 tuple: ["pkg", { options }]
+      if (typeof entry[0] === 'string' && entry[0].trim()) specs.add(entry[0].trim());
+      return;
+    }
     if (typeof entry === 'string') {
       if (entry.trim()) specs.add(entry.trim());
       return;
@@ -275,6 +279,14 @@ function splitSpec(spec) {
   const at = spec.indexOf('@');
   if (at < 0) return { name: spec, ref: 'latest' };
   return { name: spec.slice(0, at), ref: spec.slice(at + 1) };
+}
+
+// Local files/directories and URLs are not npm packages — the updater cannot install them.
+function isLocalSpec(spec) {
+  const s = String(spec).trim();
+  if (/^(\.{1,2}[\\/]|[\\/]|[A-Za-z]:[\\/])/.test(s)) return true; // ./x  ../x  /x  C:\x
+  if (/^(file|https?|git|git\+ssh|ssh):/i.test(s) || s.includes('://')) return true;
+  return /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(s); // ./plugin/local.ts
 }
 
 const SAFE_PACKAGE_NAME = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/i;
@@ -827,6 +839,10 @@ function runSelftest() {
   check('parseKeys: backspace', parseKeys('\x7f')[0]?.type === 'backspace');
   check('parseKeys: printable char', parseKeys('a')[0]?.char === 'a');
 
+  check('spec: local paths detected', isLocalSpec('./plugin/local.ts') && isLocalSpec('../x') && isLocalSpec('file:./x') && isLocalSpec('C:\\x'));
+  check('spec: url detected', isLocalSpec('https://example.com/p.ts'));
+  check('spec: npm specs kept', !isLocalSpec('oh-my-openagent@latest') && !isLocalSpec('@scope/pkg') && !isLocalSpec('pkg'));
+
   const plans = [
     { name: 'alpha', version: '2.0.0', installed: '1.0.0' },
     { name: 'beta', version: '1.5.0', installed: null },
@@ -840,6 +856,7 @@ function runSelftest() {
   check('rows: versions sorted descending', rows.find((r) => r.kind === 'version' && r.plugin === 0)?.version === '2.0.0');
   check('rows: dist-tag attached', rows.find((r) => r.kind === 'version' && r.plugin === 1)?.tag === 'latest');
   check('rows: filter narrows versions', buildPickerRows(plans, lists, '1.5', false).filter((r) => r.kind === 'version').every((r) => r.version.includes('1.5')));
+  check('render: plugins and cursor visible', renderPicker(createPickerState(rows), plans).includes('alpha') && renderPicker(createPickerState(rows), plans).includes('>'));
 
   let state = createPickerState(rows);
   check('state: cursor starts on a version', isVersionRow(rows[state.cursor]));
@@ -896,8 +913,19 @@ async function main() {
     : await resolveDir('package cache', cacheCandidates(), () => true);
   row('cache', cache.path + (cache.source === 'prompted' ? dim(' (prompted)') : ''));
 
-  const specs = readPluginSpecs(config.path);
-  if (!specs.length) throw Object.assign(new Error(`No plugin specs found in ${config.path}`), { exitCode: 2 });
+  const found = readPluginSpecs(config.path);
+  const localSpecs = found.filter(isLocalSpec);
+  const specs = found.filter((s) => !isLocalSpec(s));
+  if (localSpecs.length) {
+    stdout.write(`   ${yellow('!')} skipping local/URL plugin specs (not npm packages): ${localSpecs.join(', ')}\n`);
+  }
+  if (!specs.length) {
+    throw Object.assign(new Error(
+      localSpecs.length
+        ? `Only local/URL plugin specs found in ${config.path} — nothing for this tool to update.`
+        : `No plugin specs found in ${config.path}`,
+    ), { exitCode: 2 });
+  }
   row('plugins', specs.join(', '));
 
   section('Versions');

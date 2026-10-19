@@ -119,9 +119,9 @@ Both config generations are read:
 
 Config fields that v2 keeps for compatibility are still detected; the tool does not care which generation is installed.
 
-**Known gap:** local-path plugin specs (for example `./plugin/local.ts` in a v2 `plugins` entry) are not npm
-packages and are currently rejected instead of being skipped. Registry packages are supported; local specs are
-tracked for the v2-compatibility work.
+Local-path plugin specs (for example `./plugin/local.ts` in a v2 `plugins` entry, or a v1 `[pkg, options]` tuple)
+are not npm packages: they are skipped with a visible note instead of aborting the run. v2 semantics worth knowing:
+exact version pins are immutable in v2, and `opencode plugin update <pkg>` exists there.
 
 ## Safety model
 
