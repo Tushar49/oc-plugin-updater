@@ -198,16 +198,18 @@ function configCandidates() {
   return [...new Set(list)];
 }
 
-function cacheCandidates() {
+function cacheCandidates(base) {
   const list = [];
-  if (env.XDG_CACHE_HOME) list.push(join(env.XDG_CACHE_HOME, 'opencode', 'packages'));
-  list.push(join(homedir(), '.cache', 'opencode', 'packages'));
+  if (env.XDG_CACHE_HOME) list.push(join(env.XDG_CACHE_HOME, 'opencode', base));
+  list.push(join(homedir(), '.cache', 'opencode', base));
   if (IS_WIN) {
-    if (env.LOCALAPPDATA) list.push(join(env.LOCALAPPDATA, 'opencode', 'packages'));
-    if (env.APPDATA) list.push(join(env.APPDATA, 'opencode', 'packages'));
+    if (env.LOCALAPPDATA) list.push(join(env.LOCALAPPDATA, 'opencode', base));
+    if (env.APPDATA) list.push(join(env.APPDATA, 'opencode', base));
   }
   return [...new Set(list)];
 }
+
+const cacheHasEntries = (p) => { try { return readdirSync(p).length > 0; } catch { return false; } };
 
 const configHasMarker = (dir) =>
   ['opencode.json', 'opencode.jsonc', 'tui.json', 'tui.jsonc'].some((f) => existsSync(join(dir, f)));
@@ -252,6 +254,27 @@ function parseJsonc(text) {
     out += c;
   }
   return JSON.parse(out.replace(/,(\s*[}\]])/g, '$1'));
+}
+
+// Which config generation is in use — v1 `plugin`, v2 `plugins`, or both.
+function configGeneration(configDir) {
+  let hasV1 = false;
+  let hasV2 = false;
+  for (const f of ['opencode.jsonc', 'opencode.json', 'tui.json', 'tui.jsonc', 'cli.json']) {
+    const path = join(configDir, f);
+    if (!existsSync(path)) continue;
+    const raw = readFileSync(path, 'utf8');
+    if (!raw.trim()) continue;
+    try {
+      const cfg = parseJsonc(raw);
+      if (cfg.plugin) hasV1 = true;
+      if (cfg.plugins) hasV2 = true;
+    } catch { /* parse errors surface in the normal run */ }
+  }
+  if (hasV1 && hasV2) return 'mixed';
+  if (hasV2) return 'v2';
+  if (hasV1) return 'v1';
+  return 'unknown';
 }
 
 function readPluginSpecs(configDir) {
@@ -342,6 +365,25 @@ function wrapperRoots(pkgRoot, name) {
   return readdirSync(pkgRoot, { withFileTypes: true })
     .filter((e) => e.isDirectory() && (e.name === name || e.name.startsWith(name + '@')))
     .map((e) => join(pkgRoot, e.name));
+}
+
+// Installed version inside a wrapper, tolerating both cache generations:
+// v1 `<wrapper>/node_modules/<name>` and v2 `<wrapper>/<timestamp>/node_modules/<name>`.
+function installedVersionIn(wrapperRoot, name) {
+  const pj = join(wrapperRoot, 'node_modules', name, 'package.json');
+  if (existsSync(pj)) {
+    try { return JSON.parse(readFileSync(pj, 'utf8')).version; } catch { return null; }
+  }
+  try {
+    for (const e of readdirSync(wrapperRoot, { withFileTypes: true })) {
+      if (!e.isDirectory() || !/^\d+$/.test(e.name)) continue;
+      const nested = join(wrapperRoot, e.name, 'node_modules', name, 'package.json');
+      if (existsSync(nested)) {
+        try { return JSON.parse(readFileSync(nested, 'utf8')).version; } catch { return null; }
+      }
+    }
+  } catch { /* unreadable wrapper */ }
+  return null;
 }
 
 function walkNativeFiles(root) {
@@ -903,19 +945,8 @@ function runDoctor(config, cache, localSpecs, npmSpecs) {
 
   const files = ['opencode.jsonc', 'opencode.json', 'tui.json', 'tui.jsonc', 'cli.json'];
   const present = files.filter((f) => existsSync(join(config.path, f)));
-  let hasV1 = false;
-  let hasV2 = false;
-  const emptyFiles = [];
-  for (const f of present) {
-    const raw = readFileSync(join(config.path, f), 'utf8');
-    if (!raw.trim()) { emptyFiles.push(f); continue; }
-    try {
-      const cfg = parseJsonc(raw);
-      if (cfg.plugin) hasV1 = true;
-      if (cfg.plugins) hasV2 = true;
-    } catch { /* reported by normal runs */ }
-  }
-  row('generation', hasV1 && hasV2 ? 'mixed (v1 plugin + v2 plugins)' : hasV2 ? 'v2' : hasV1 ? 'v1' : 'unknown');
+  const emptyFiles = present.filter((f) => !readFileSync(join(config.path, f), 'utf8').trim());
+  row('generation', configGeneration(config.path));
   row('files read', present.join(', ') || 'none');
   if (emptyFiles.length) row('empty files', emptyFiles.join(', ') + dim(' (skipped)'));
   row('npm specs', npmSpecs.join(', ') || 'none');
@@ -936,7 +967,6 @@ function runDoctor(config, cache, localSpecs, npmSpecs) {
   row('cache layout', (base === 'packages' ? 'v1 (packages)' : base === 'npm' ? 'v2 (npm)' : `custom (${base})`)
     + (stamped ? dim(' — timestamped installs') : ''));
   row('wrappers', wrappers.length ? wrappers.join(', ') : dim('none'));
-  if (base === 'npm') row('note', yellow('!') + ' the v2 npm cache base is not in the default candidates yet (P2.5)');
 
   const lockFiles = wrappers.flatMap((w) => walkNativeFiles(join(cache.path, w)));
   const locked = probeLocked(lockFiles);
@@ -1157,10 +1187,6 @@ async function main() {
     ? { path: flags.configDir, source: 'flag' }
     : await resolveDir('config', configCandidates(), configHasMarker);
   row('config', config.path + (config.source === 'prompted' ? dim(' (prompted)') : ''));
-  const cache = flags.cacheDir
-    ? { path: flags.cacheDir, source: 'flag' }
-    : await resolveDir('package cache', cacheCandidates(), () => true);
-  row('cache', cache.path + (cache.source === 'prompted' ? dim(' (prompted)') : ''));
 
   const found = readPluginSpecs(config.path);
   const localSpecs = found.filter(isLocalSpec);
@@ -1177,6 +1203,14 @@ async function main() {
   }
   row('plugins', specs.join(', '));
 
+  // Cache base follows the config generation: v2 installs under `npm`, v1 under `packages`.
+  const generation = configGeneration(config.path);
+  const cacheBases = (generation === 'v2' || generation === 'mixed') ? ['npm', 'packages'] : ['packages', 'npm'];
+  const cache = flags.cacheDir
+    ? { path: flags.cacheDir, source: 'flag' }
+    : await resolveDir('package cache', cacheBases.flatMap(cacheCandidates), cacheHasEntries);
+  row('cache', cache.path + (cache.source === 'prompted' ? dim(' (prompted)') : ''));
+
   if (flags.doctor) return runDoctor(config, cache, localSpecs, specs);
   if (flags.clean) return runClean(config, cache, localSpecs, specs);
   if (flags.remove.length) return runRemove(cache);
@@ -1190,11 +1224,8 @@ async function main() {
     const target = await resolveTarget(name, ref);
     let installed = null;
     for (const root of wrapperRoots(cache.path, name)) {
-      const pj = join(root, 'node_modules', name, 'package.json');
-      if (existsSync(pj)) {
-        try { installed = JSON.parse(readFileSync(pj, 'utf8')).version; } catch { /* skip */ }
-        break;
-      }
+      installed = installedVersionIn(root, name);
+      if (installed) break;
     }
     plans.push({ spec, name, ...target, installed });
   }
@@ -1335,9 +1366,11 @@ async function main() {
   section('Verify');
   let failed = false;
   for (const p of plans) {
-    const pj = join(cache.path, p.spec, 'node_modules', p.name, 'package.json');
     let got = null;
-    try { got = JSON.parse(readFileSync(pj, 'utf8')).version; } catch { /* missing */ }
+    for (const root of wrapperRoots(cache.path, p.name)) {
+      got = installedVersionIn(root, p.name);
+      if (got) break;
+    }
     if (got === p.version) stdout.write(`   ${green(TICK)} ${p.name} ${got}\n`);
     else { stdout.write(`   ${red(CROSS)} ${p.name} expected ${p.version}, got ${got ?? 'nothing'}\n`); failed = true; }
   }

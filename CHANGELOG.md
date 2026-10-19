@@ -26,6 +26,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `--list` exits non-zero when any registry lookup fails; `--yes` no longer prompts for pnpm build approval (prints the manual command instead).
 - Plugin specs are validated before any registry-URL or cache-path use, closing a path-traversal vector from config-supplied specs.
 
+- The package cache is resolved per config generation: v2 `plugins` configs prefer the `npm` cache base, v1 `plugin` configs prefer `packages`; both are tried automatically.
+- Installed versions are detected in both cache generations — v1 `node_modules/<pkg>` and v2 `<timestamp>/node_modules/<pkg>` — so v2 caches report real installed versions and the verify step accepts them.
 ### Fixed
 
 - Empty config files (for example a 0-byte `tui.json` placeholder) are skipped instead of crashing with `Unexpected end of JSON input`; unparsable configs now name the file in the error.

@@ -126,7 +126,7 @@ First existing candidate wins. When nothing is found, an interactive terminal is
 | | Detection order |
 | --- | --- |
 | **Config** | `$OPENCODE_CONFIG_DIR` → `dirname($OPENCODE_CONFIG)` → `$XDG_CONFIG_HOME/opencode` → `~/.config/opencode` → `%APPDATA%\opencode` / `%LOCALAPPDATA%\opencode` (Windows) |
-| **Package cache** | `$XDG_CACHE_HOME/opencode/packages` → `~/.cache/opencode/packages` → `%LOCALAPPDATA%\opencode\packages` → `%APPDATA%\opencode\packages` (Windows) |
+| **Package cache** | `packages` / `npm` bases under: `$XDG_CACHE_HOME/opencode` → `~/.cache/opencode` → `%LOCALAPPDATA%\opencode` / `%APPDATA%\opencode` (Windows). The base follows your config generation: v2 `plugins` configs prefer `npm`, v1 `plugin` configs prefer `packages`; both are tried automatically. |
 
 Use `--config-dir` / `--cache-dir` to bypass detection entirely.
 

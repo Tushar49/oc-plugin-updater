@@ -63,8 +63,8 @@ A standalone, cross-platform CLI that updates OpenCode npm plugins by resetting 
 **Scope:**
 - Classify specs: npm package vs local path/URL; skip non-npm with a visible note instead of aborting (config stays read-only). **Shipped 2026-10-19** (`isLocalSpec`, selftest 27/27, mixed-config verified).
 - Handle v1 tuples `[pkg, options]` and v2 objects `{ package, options }`. **Shipped 2026-10-19.**
-- Probe both cache depths: v2 wraps installs in a timestamped directory.
-- Add the v2 cache base (`…/opencode/npm`) to default detection alongside `packages`.
+- Probe both cache depths: v2 wraps installs in a timestamped directory. **Shipped 2026-10-19.**
+- Add the v2 cache base (`…/opencode/npm`) to default detection alongside `packages`. **Shipped 2026-10-19** (generation-aware: v2 prefers `npm`, v1 prefers `packages`).
 - Verify install-into-v2 on a real run (not dry) before claiming support.
 - `--doctor`: report config generation (v1/v2), which files were read, and the detected `opencode` / `opencode2` binary.
 - Docs: state v2 semantics (exact pins immutable; `opencode plugin update` exists in v2) and stop implying full parity.
