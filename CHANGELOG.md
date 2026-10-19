@@ -15,6 +15,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - `--set <name@version>`, `--only <name>`, `--dry-run`, and `--yes` for scripted and non-interactive runs.
 - `--pick`: interactive version picker (arrow/j/k navigation, `/` filter, `Space` select, `Enter` confirm, `Esc` cancel, `?` help) with a `--selftest` harness for its pure logic.
 - Maintenance toolkit: `--clean` (orphan prune), `--remove <name>`, `--backup`/`--rollback` (failed installs auto-restore the previous wrapper), `--doctor` (paths, v1/v2 generation, cache layout, binaries, locks, package managers), and `--registry <url>` for mirror support.
+- `--notify`: check-only mode — exit 4 when updates exist, 0 when current; safe for cron/launchd/Task Scheduler.
+- `--json`: machine-readable output for `--list`, `--notify` and `--dry-run`.
+- `--git-pull`: `git pull --ff-only` the config directory before reading it (webdex parity).
+- `--completions bash|zsh|pwsh`: shell completion scripts, plus a compact man page at `docs/oc-plugin-updater.1`.
+- Library API: `import { updatePlugins, checkUpdates } from 'oc-plugin-updater'` (package `exports` added; importing no longer runs the CLI).
+- Private-registry auth: `~/.npmrc` `_authToken` entries are sent as Bearer headers to matching hosts (npm, GitHub Packages, Verdaccio).
+- Test suite (`node:test`, `npm test`) and a GitHub Actions matrix (ubuntu/macOS/windows × Node 18/20/22).
 - Spec classification: local-path/URL plugin specs (v2 `./plugin/local.ts`, `file:`/URLs) are skipped with a visible note; v1 tuple entries (`[pkg, options]`) are read instead of silently ignored.
 - Strict package name/version validation for `--set` and installs, blocking registry-URL and shell-metacharacter injection.
 

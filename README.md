@@ -94,6 +94,50 @@ cache directory. If an install fails, the previous wrapper is restored automatic
 `--rollback` restores the newest backup per wrapper on demand. Destructive modes
 (`--clean`, `--remove`, `--rollback`) refuse to run non-interactively without `--yes`.
 
+### Check-only mode and automation
+
+```bash
+node bin/cli.mjs --notify                  # exit 4 when updates exist, 0 when current
+node bin/cli.mjs --notify --json           # { updatesAvailable, updates, current }
+node bin/cli.mjs --list --json             # the full catalogue as JSON
+node bin/cli.mjs --dry-run --json          # the update plan as JSON
+node bin/cli.mjs --git-pull                # git pull --ff-only the config dir first
+node bin/cli.mjs --registry https://npm.pkg.github.com   # private/mirror registry
+```
+
+Private registries are authenticated from `~/.npmrc` (`//host/:_authToken=…`) —
+the tool sends a Bearer header for matching hosts; pnpm/npm read the same file
+for installs, so credentials are never handled by this tool.
+
+Schedule a daily check — Task Scheduler:
+```powershell
+schtasks /Create /SC DAILY /ST 09:00 /TN "oc-plugin-updater" /TR "node A:\path\bin\cli.mjs --notify"
+```
+cron / launchd:
+```bash
+0 9 * * * node /path/bin/cli.mjs --notify
+```
+
+Shell completions:
+```bash
+node bin/cli.mjs --completions pwsh >> $PROFILE          # restart the shell after
+node bin/cli.mjs --completions bash >> ~/.bashrc
+node bin/cli.mjs --completions zsh                       # add to fpath, then compinit
+```
+A compact man page ships at `docs/oc-plugin-updater.1`.
+
+### Library API
+
+```js
+import { checkUpdates, updatePlugins } from 'oc-plugin-updater';
+
+const code = await checkUpdates({ configDir, cacheDir });  // 0 = current, 4 = updates
+if (code === 4) await updatePlugins({ configDir, cacheDir, yes: true });
+```
+
+Both entries accept `{ configDir, cacheDir, pm, registry, yes, dryRun, only, set }`
+and resolve with the CLI exit code. Importing the package never runs the CLI.
+
 ### Flags
 
 | Flag | Description |
@@ -117,7 +161,7 @@ cache directory. If an install fails, the previous wrapper is restored automatic
 | `--kill-blockers` | Find and kill processes holding package files. Asks for confirmation on a TTY. |
 | `-h`, `--help` | Show usage. |
 
-Exit codes: `0` success · `1` install/verify failure · `2` usage/path error · `3` files locked.
+Exit codes: `0` success · `1` install/verify failure · `2` usage/path error · `3` files locked · `4` updates available (`--notify`).
 
 ## How paths are detected
 

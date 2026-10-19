@@ -86,16 +86,17 @@ A standalone, cross-platform CLI that updates OpenCode npm plugins by resetting 
 - `--registry <url>`: covers the "local registry mirror" half of `--offline` (lookups + installs). Cached-manifest offline mode remains planned.
 - Destructive modes refuse to run non-interactively without `--yes`; `--dry-run` plans without touching; locks abort with exit 3.
 
-### P4 — Integrations & parity
-- `--notify`: check on a schedule (Task Scheduler / launchd / cron sample) and print/desktop-notify when updates exist.
-- Optional config-dir git sync (webdex parity) behind an explicit flag.
-- Library export (`import { updatePlugins } from 'oc-plugin-updater'`) for embedding (alfaoz parity).
-- Shell completions (bash/zsh/pwsh) + man page.
+### P4 — Integrations & parity (shipped 2026-10-19, check-only form)
+- `--notify`: shipped as a check-only CLI mode (exit 4 when updates exist) for cron/launchd/Task Scheduler. In-app toast + auto-apply-on-restart (alfaoz-style) stays planned.
+- Optional config-dir git sync: shipped as explicit `--git-pull` (`git pull --ff-only` in the config dir; skipped with a note when it is not a repo).
+- Library export: shipped — `updatePlugins()` / `checkUpdates()` with package `exports`; importing no longer runs the CLI.
+- Shell completions (bash/zsh/pwsh) + man page: shipped (`--completions`, `docs/oc-plugin-updater.1`).
 
-### P5 — Robustness
-- Handle both cache layouts (`packages/<spec>/node_modules/<name>` and flat `node_modules/<name>`).
-- Multi-registry support (npm, GitHub Packages, private mirrors) with per-registry auth passthrough.
-- Structured `--json` output for automation.
+### P5 — Robustness (shipped 2026-10-19)
+- Handle both cache layouts: shipped in P2.5 — dual-depth probe (`<wrapper>/node_modules/<name>` and `<wrapper>/<timestamp>/node_modules/<name>`) plus generation-aware `packages`/`npm` base detection.
+- Multi-registry support: shipped — `--registry <url>` for lookups + installs, with `~/.npmrc` `_authToken` Bearer passthrough per host. `@scope:registry` mapping remains planned.
+- Structured `--json` output: shipped for `--list`, `--notify` and `--dry-run`.
+- Quality: `node:test` suite (`npm test`) + GitHub Actions matrix (ubuntu/macOS/windows × Node 18/20/22) shipped; first npm publish remains a release step.
 
 ## 4. UI/UX plan
 

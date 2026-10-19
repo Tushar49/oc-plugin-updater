@@ -6,6 +6,10 @@
   "bin": {
     "oc-plugin-updater": "bin/cli.mjs"
   },
+  "main": "./bin/cli.mjs",
+  "exports": {
+    ".": "./bin/cli.mjs"
+  },
   "engines": {
     "node": ">=18"
   },
@@ -22,7 +26,8 @@
     "url": "https://github.com/Tushar49/oc-plugin-updater/issues"
   },
   "scripts": {
-    "prepublishOnly": "node --check bin/cli.mjs"
+    "prepublishOnly": "node --check bin/cli.mjs",
+    "test": "node --test test/cli.test.mjs"
   },
   "keywords": [
     "opencode",
