@@ -1,0 +1,111 @@
+.\" Manual page for oc-plugin-updater.
+.TH OC-PLUGIN-UPDATER 1 "October 2026" "oc-plugin-updater 0.1.0" "User Commands"
+.SH NAME
+oc-plugin-updater \- cross-platform updater for OpenCode npm plugins
+.SH SYNOPSIS
+.B oc-plugin-updater
+.RI [ options ]
+.SH DESCRIPTION
+Reads the plugin list from OpenCode's config (v1
+.I plugin
+and v2
+.IR plugins ,
+across
+.IR opencode.jsonc ", " opencode.json " and " tui.json(c) ),
+resolves target versions from the npm registry, resets OpenCode's plugin
+package cache (v1
+.I packages
+and v2
+.I npm
+layouts), and reinstalls with pnpm or npm. Config files are never written.
+.SH OPTIONS
+.TP
+.BR \-\-list
+Print the full version catalogue for each plugin and exit.
+.TP
+.BR \-\-pick
+Choose target versions interactively (arrows/j/k, / filter, Space select,
+Enter confirm, Esc cancel; requires a TTY).
+.TP
+.BR "\-\-set " \fIname@version\fR
+Target an exact version/tag for a plugin (repeatable).
+.TP
+.BR "\-\-only " \fIname\fR
+Process only the named plugin (repeatable).
+.TP
+.BR \-\-notify
+Check-only mode: report available updates and exit 4 when any exist,
+0 otherwise. Suitable for schedulers (cron, launchd, Task Scheduler).
+.TP
+.BR \-\-json
+Machine-readable output; supports
+.BR \-\-list ", " \-\-notify " and " \-\-dry-run .
+.TP
+.BR \-\-git\-pull
+Run
+.B git pull \-\-ff\-only
+in the config directory before reading it.
+.TP
+.BR "\-\-completions " \fIshell\fR
+Print a completion script for
+.IR bash ", " zsh " or " pwsh .
+.TP
+.BR \-\-clean
+Remove cached wrappers whose plugin is no longer in any config.
+.TP
+.BR "\-\-remove " \fIname\fR
+Delete a plugin's cached wrappers (config stays untouched).
+.TP
+.BR \-\-backup
+Snapshot wrappers before replacing them; a failed install auto-restores.
+.TP
+.BR \-\-rollback
+Restore the most recent backup of each updated wrapper.
+.TP
+.BR \-\-doctor
+Report paths, config generation, cache layout, binaries, locks, tools.
+.TP
+.BR "\-\-registry " \fIurl\fR
+Use a custom npm registry (mirror) for lookups and installs.
+.TP
+.BR \-\-dry\-run
+Show what would change; touch nothing.
+.TP
+.BR \-\-yes ", " \-y
+Non-interactive: accept defaults, skip prompts.
+.TP
+.BR \-\-all
+Uncap catalogue lists.
+.TP
+.BR "\-\-pm " \fIpnpm|npm\fR
+Force a package manager.
+.TP
+.BR "\-\-config\-dir " \fIdir\fR ", " "\-\-cache\-dir " \fIdir\fR
+Override path detection.
+.TP
+.BR \-\-kill\-blockers
+Kill processes holding package files locked.
+.SH EXIT STATUS
+.TP
+.B 0
+Success (or everything up to date).
+.TP
+.B 1
+Install/verify failure.
+.TP
+.B 2
+Usage or path error.
+.TP
+.B 3
+Files locked by running processes.
+.TP
+.B 4
+Updates available (only from
+.BR \-\-notify ).
+.SH LIBRARY
+.B import { updatePlugins, checkUpdates } from 'oc-plugin-updater'
+\-\- both accept
+.IR configDir ", " cacheDir ", " pm ", " registry ", " yes ", " dryRun ", " only ", " set
+and resolve with the CLI exit code.
+.SH LICENSE
+MIT

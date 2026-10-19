@@ -11,21 +11,25 @@
  * - Path resolution: env vars > OS defaults > interactive prompt
  * - `--kill-blockers` kills processes holding package files locked
  *
- * Exit codes: 0 ok · 1 install/verify failure · 2 usage/path error · 3 files locked
+ * Exit codes: 0 ok · 1 install/verify failure · 2 usage/path error · 3 files locked · 4 updates available (--notify)
  */
 
 import {
   readFileSync, writeFileSync, existsSync, mkdirSync, rmSync,
-  readdirSync, statSync, openSync, closeSync,
+  readdirSync, statSync, openSync, closeSync, renameSync,
 } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, basename, delimiter } from 'node:path';
 import { homedir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 import { createInterface } from 'node:readline/promises';
 import { stdin, stdout, env, platform, argv, exit } from 'node:process';
+import { pathToFileURL } from 'node:url';
 
 const VERSION = '0.1.0';
 const IS_WIN = platform === 'win32';
+// True when this file is the entry point (node bin/cli.mjs), false when imported as a library.
+let invoked = false;
+try { invoked = Boolean(argv[1]) && import.meta.url === pathToFileURL(argv[1]).href; } catch { /* exotic argv[1] */ }
 
 /* ---------------------------------------------------------------- colors -- */
 
@@ -61,8 +65,8 @@ function indent(text, prefix = '     ') {
 
 /* ------------------------------------------------------------ cli parsing -- */
 
-const flags = { killBlockers: false, help: false, configDir: null, cacheDir: null, pm: null, list: false, dryRun: false, yes: false, all: false, set: [], only: [] };
-{
+const flags = { killBlockers: false, help: false, configDir: null, cacheDir: null, pm: null, list: false, dryRun: false, yes: false, all: false, pick: false, selftest: false, clean: false, rollback: false, doctor: false, backup: false, registry: null, notify: false, gitPull: false, json: false, completions: null, set: [], only: [], remove: [] };
+if (invoked) {
   const args = argv.slice(2);
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
@@ -85,6 +89,18 @@ const flags = { killBlockers: false, help: false, configDir: null, cacheDir: nul
     else if (key === '--dry-run') flags.dryRun = true;
     else if (key === '--yes' || key === '-y') flags.yes = true;
     else if (key === '--all') flags.all = true;
+    else if (key === '--pick') flags.pick = true;
+    else if (key === '--selftest') flags.selftest = true;
+    else if (key === '--clean') flags.clean = true;
+    else if (key === '--rollback') flags.rollback = true;
+    else if (key === '--doctor') flags.doctor = true;
+    else if (key === '--backup') flags.backup = true;
+    else if (key === '--registry') flags.registry = takeValue();
+    else if (key === '--remove') flags.remove.push(takeValue());
+    else if (key === '--notify') flags.notify = true;
+    else if (key === '--git-pull') flags.gitPull = true;
+    else if (key === '--json') flags.json = true;
+    else if (key === '--completions') flags.completions = takeValue();
     else if (key === '--set') flags.set.push(takeValue());
     else if (key === '--only') flags.only.push(takeValue());
     else {
@@ -96,8 +112,37 @@ const flags = { killBlockers: false, help: false, configDir: null, cacheDir: nul
     console.error(`Invalid --pm value: ${flags.pm} (expected: pnpm or npm)`);
     exit(2);
   }
+  if (flags.pick && flags.list) {
+    console.error('--pick cannot be combined with --list.');
+    exit(2);
+  }
+  if (flags.pick && flags.yes) {
+    console.error('--pick cannot be combined with --yes (the picker is interactive).');
+    exit(2);
+  }
+  const modes = [flags.list, flags.pick, flags.clean, flags.rollback, flags.doctor, flags.notify, flags.completions, flags.remove.length > 0].filter(Boolean).length;
+  if (modes > 1) {
+    console.error('--list, --pick, --clean, --remove, --rollback, --doctor, --notify and --completions are separate modes; use one at a time.');
+    exit(2);
+  }
+  if (flags.registry && !/^https?:\/\//i.test(flags.registry)) {
+    console.error(`Invalid --registry URL: ${flags.registry} (expected http(s)://...)`);
+    exit(2);
+  }
+  if (flags.completions && !['bash', 'zsh', 'pwsh'].includes(flags.completions)) {
+    console.error(`Invalid --completions shell: ${flags.completions} (expected: bash, zsh or pwsh)`);
+    exit(2);
+  }
+  if (flags.json && !flags.list && !flags.notify && !flags.dryRun) {
+    console.error('--json supports --list, --notify and --dry-run.');
+    exit(2);
+  }
 }
-if (flags.help) {
+const DEFAULT_REGISTRY = 'https://registry.npmjs.org';
+function registryBase() {
+  return (flags.registry || DEFAULT_REGISTRY).replace(/\/+$/, '');
+}
+if (invoked && flags.help) {
   stdout.write(`
 oc-plugin-updater — update OpenCode npm plugins without the installer TUI
 
@@ -107,7 +152,18 @@ Usage:
 
 Options:
   --list               print the full version catalogue for each plugin and exit
+  --pick               choose versions interactively (arrows, space, enter; needs a TTY)
   --set <name@ver>     target an exact version/tag for a plugin (repeatable)
+  --notify             check-only: report available updates (exit 4 when found)
+  --json               machine-readable output with --list, --notify and --dry-run
+  --git-pull           run "git pull --ff-only" in the config directory first
+  --completions <sh>   print a shell completion script (bash, zsh or pwsh)
+  --clean              remove cached wrappers whose plugin is no longer in any config
+  --remove <name>      delete a plugin's cached wrappers (config is never touched)
+  --backup             snapshot wrappers to a backup dir before replacing them
+  --rollback           restore the most recent backup of each updated wrapper
+  --doctor             report paths, config generation, cache layout, locks, tools
+  --registry <url>     use a custom npm registry (mirror) for lookups and installs
   --only <name>        process only the named plugin (repeatable)
   --dry-run            show what would change; touch nothing
   --yes, -y            skip the confirmation prompt (non-interactive)
@@ -165,16 +221,18 @@ function configCandidates() {
   return [...new Set(list)];
 }
 
-function cacheCandidates() {
+function cacheCandidates(base) {
   const list = [];
-  if (env.XDG_CACHE_HOME) list.push(join(env.XDG_CACHE_HOME, 'opencode', 'packages'));
-  list.push(join(homedir(), '.cache', 'opencode', 'packages'));
+  if (env.XDG_CACHE_HOME) list.push(join(env.XDG_CACHE_HOME, 'opencode', base));
+  list.push(join(homedir(), '.cache', 'opencode', base));
   if (IS_WIN) {
-    if (env.LOCALAPPDATA) list.push(join(env.LOCALAPPDATA, 'opencode', 'packages'));
-    if (env.APPDATA) list.push(join(env.APPDATA, 'opencode', 'packages'));
+    if (env.LOCALAPPDATA) list.push(join(env.LOCALAPPDATA, 'opencode', base));
+    if (env.APPDATA) list.push(join(env.APPDATA, 'opencode', base));
   }
   return [...new Set(list)];
 }
+
+const cacheHasEntries = (p) => { try { return readdirSync(p).length > 0; } catch { return false; } };
 
 const configHasMarker = (dir) =>
   ['opencode.json', 'opencode.jsonc', 'tui.json', 'tui.jsonc'].some((f) => existsSync(join(dir, f)));
@@ -221,9 +279,34 @@ function parseJsonc(text) {
   return JSON.parse(out.replace(/,(\s*[}\]])/g, '$1'));
 }
 
+// Which config generation is in use — v1 `plugin`, v2 `plugins`, or both.
+function configGeneration(configDir) {
+  let hasV1 = false;
+  let hasV2 = false;
+  for (const f of ['opencode.jsonc', 'opencode.json', 'tui.json', 'tui.jsonc', 'cli.json']) {
+    const path = join(configDir, f);
+    if (!existsSync(path)) continue;
+    const raw = readFileSync(path, 'utf8');
+    if (!raw.trim()) continue;
+    try {
+      const cfg = parseJsonc(raw);
+      if (cfg.plugin) hasV1 = true;
+      if (cfg.plugins) hasV2 = true;
+    } catch { /* parse errors surface in the normal run */ }
+  }
+  if (hasV1 && hasV2) return 'mixed';
+  if (hasV2) return 'v2';
+  if (hasV1) return 'v1';
+  return 'unknown';
+}
+
 function readPluginSpecs(configDir) {
   const specs = new Set();
   const push = (entry) => {
+    if (Array.isArray(entry)) { // v1 tuple: ["pkg", { options }]
+      if (typeof entry[0] === 'string' && entry[0].trim()) specs.add(entry[0].trim());
+      return;
+    }
     if (typeof entry === 'string') {
       if (entry.trim()) specs.add(entry.trim());
       return;
@@ -237,7 +320,14 @@ function readPluginSpecs(configDir) {
   for (const file of ['opencode.jsonc', 'opencode.json', 'tui.json', 'tui.jsonc']) {
     const path = join(configDir, file);
     if (!existsSync(path)) continue;
-    const cfg = parseJsonc(readFileSync(path, 'utf8'));
+    const raw = readFileSync(path, 'utf8');
+    if (!raw.trim()) continue; // some tools leave empty placeholder configs behind
+    let cfg;
+    try {
+      cfg = parseJsonc(raw);
+    } catch (err) {
+      throw Object.assign(new Error(`Cannot parse ${path}: ${err.message}`), { exitCode: 2 });
+    }
     for (const spec of cfg.plugin ?? []) push(spec);  // v1: array of strings
     for (const spec of cfg.plugins ?? []) push(spec); // v2: array of objects (defensive: strings too)
   }
@@ -259,6 +349,14 @@ function splitSpec(spec) {
   return { name: spec.slice(0, at), ref: spec.slice(at + 1) };
 }
 
+// Local files/directories and URLs are not npm packages — the updater cannot install them.
+function isLocalSpec(spec) {
+  const s = String(spec).trim();
+  if (/^(\.{1,2}[\\/]|[\\/]|[A-Za-z]:[\\/])/.test(s)) return true; // ./x  ../x  /x  C:\x
+  if (/^(file|https?|git|git\+ssh|ssh):/i.test(s) || s.includes('://')) return true;
+  return /\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(s); // ./plugin/local.ts
+}
+
 const SAFE_PACKAGE_NAME = /^(@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*$/i;
 const SAFE_VERSION_REF = /^[A-Za-z0-9._+-]+$/;
 
@@ -270,10 +368,41 @@ function assertSafeSpec(name, ref) {
   }
 }
 
+// Private-registry auth: read the user's .npmrc (`//host/:_authToken=…`) and send
+// a Bearer header when a fetch targets a host that has a token. pnpm/npm read the
+// same file for their installs, so the tool never handles credentials itself.
+function npmrcTokenFor(text, url) {
+  let host;
+  try { host = new URL(url).host; } catch { return null; }
+  for (const line of String(text ?? '').split(/\r?\n/)) {
+    const eq = line.indexOf('=');
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim();
+    const value = line.slice(eq + 1).trim();
+    const m = /^\/\/([^/]+?)\/?:?_authToken$/.exec(key);
+    if (m && m[1].replace(/[:/]+$/, '') === host) return value || null;
+  }
+  return null;
+}
+
+let npmrcText;
+function userNpmrc() {
+  if (npmrcText === undefined) {
+    const path = env.NPM_CONFIG_USERCONFIG || join(homedir(), '.npmrc');
+    try { npmrcText = readFileSync(path, 'utf8'); } catch { npmrcText = ''; }
+  }
+  return npmrcText;
+}
+
+function registryHeaders(url) {
+  const token = npmrcTokenFor(userNpmrc(), url);
+  return token ? { Authorization: `Bearer ${token}` } : {};
+}
+
 async function resolveTarget(name, ref) {
-  const url = `https://registry.npmjs.org/-/package/${name.replaceAll('/', '%2F')}/dist-tags`;
+  const url = `${registryBase()}/-/package/${name.replaceAll('/', '%2F')}/dist-tags`;
   try {
-    const res = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    const res = await fetch(url, { headers: registryHeaders(url), signal: AbortSignal.timeout(15000) });
     if (res.ok) {
       const tags = await res.json();
       if (Object.hasOwn(tags, ref)) return { version: tags[ref], tag: ref, tags };
@@ -290,6 +419,25 @@ function wrapperRoots(pkgRoot, name) {
   return readdirSync(pkgRoot, { withFileTypes: true })
     .filter((e) => e.isDirectory() && (e.name === name || e.name.startsWith(name + '@')))
     .map((e) => join(pkgRoot, e.name));
+}
+
+// Installed version inside a wrapper, tolerating both cache generations:
+// v1 `<wrapper>/node_modules/<name>` and v2 `<wrapper>/<timestamp>/node_modules/<name>`.
+function installedVersionIn(wrapperRoot, name) {
+  const pj = join(wrapperRoot, 'node_modules', name, 'package.json');
+  if (existsSync(pj)) {
+    try { return JSON.parse(readFileSync(pj, 'utf8')).version; } catch { return null; }
+  }
+  try {
+    for (const e of readdirSync(wrapperRoot, { withFileTypes: true })) {
+      if (!e.isDirectory() || !/^\d+$/.test(e.name)) continue;
+      const nested = join(wrapperRoot, e.name, 'node_modules', name, 'package.json');
+      if (existsSync(nested)) {
+        try { return JSON.parse(readFileSync(nested, 'utf8')).version; } catch { return null; }
+      }
+    }
+  } catch { /* unreadable wrapper */ }
+  return null;
 }
 
 function walkNativeFiles(root) {
@@ -441,6 +589,7 @@ async function installWith(pm, name, version, dir) {
   writeFileSync(join(dir, 'package.json'),
     JSON.stringify({ name: name + '-opencode-plugin-wrapper', version: '0.0.0', private: true }, null, 2));
   const args = ['add', `${name}@${version}`, ...(SAVE_EXACT[pm] ?? ['--save-exact'])];
+  if (flags.registry) args.push('--registry', flags.registry);
   const res = runCommand(pm, args, dir);
   const output = String(res.stdout ?? '') + String(res.stderr ?? '');
   if (output.trim()) stdout.write(indent(output));
@@ -530,10 +679,10 @@ function compareSemver(a, b) {
 }
 
 async function fetchVersionList(name) {
-  const url = `https://registry.npmjs.org/${name.replaceAll('/', '%2F')}`;
+  const url = `${registryBase()}/${name.replaceAll('/', '%2F')}`;
   try {
     const res = await fetch(url, {
-      headers: { Accept: 'application/vnd.npm.install-v1+json' },
+      headers: { Accept: 'application/vnd.npm.install-v1+json', ...registryHeaders(url) },
       signal: AbortSignal.timeout(20000),
     });
     if (!res.ok) return null;
@@ -546,17 +695,38 @@ async function fetchVersionList(name) {
 
 const CATALOGUE_CAP = 30;
 
-async function printCatalogue(plans, showAll) {
+async function collectCatalogue(plans) {
+  const plugins = [];
   let ok = true;
   for (const p of plans) {
     const info = await fetchVersionList(p.name);
-    if (!info) { ok = false; stdout.write(`\n   ${red(CROSS)} ${p.name}: registry lookup failed\n`); continue; }
+    if (!info) { ok = false; plugins.push({ name: p.name, error: 'registry lookup failed' }); continue; }
+    plugins.push({
+      name: p.name,
+      installed: p.installed ?? null,
+      installedPublished: p.installed ? info.versions.includes(p.installed) : null,
+      target: p.version,
+      tag: p.tag ?? null,
+      versions: info.versions.slice().sort((a, b) => compareSemver(b, a)),
+      tags: info.tags,
+    });
+  }
+  return { ok, plugins };
+}
+
+async function printCatalogue(plans, showAll) {
+  const { ok, plugins } = await collectCatalogue(plans);
+  if (flags.json) {
+    stdout.write(JSON.stringify({ ok, plugins }, null, 2) + '\n');
+    return ok;
+  }
+  for (const p of plugins) {
+    if (p.error) { stdout.write(`\n   ${red(CROSS)} ${p.name}: ${p.error}\n`); continue; }
     const tagByVersion = new Map();
-    for (const [tag, ver] of Object.entries(info.tags)) if (!tagByVersion.has(ver)) tagByVersion.set(ver, tag);
-    const sorted = info.versions.slice().sort((a, b) => compareSemver(b, a));
-    const shown = showAll ? sorted : sorted.slice(0, CATALOGUE_CAP);
+    for (const [tag, ver] of Object.entries(p.tags)) if (!tagByVersion.has(ver)) tagByVersion.set(ver, tag);
+    const shown = showAll ? p.versions : p.versions.slice(0, CATALOGUE_CAP);
     const installedNote = p.installed
-      ? (info.versions.includes(p.installed) ? '' : ` ${yellow('(not published)')}`)
+      ? (p.installedPublished ? '' : ` ${yellow('(not published)')}`)
       : '';
     stdout.write(`\n   ${bold(p.name)}  ${dim('installed')} ${p.installed ?? 'none'}${installedNote}\n`);
     for (const ver of shown) {
@@ -565,17 +735,639 @@ async function printCatalogue(plans, showAll) {
       if (tagByVersion.has(ver)) marks.push(green(tagByVersion.get(ver)));
       stdout.write(`     ${ver}${marks.length ? '  ' + marks.join(' ') : ''}\n`);
     }
-    if (shown.length < sorted.length) {
-      stdout.write(`     ${dim(`… ${sorted.length - shown.length} more (use --all)`)}\n`);
+    if (shown.length < p.versions.length) {
+      stdout.write(`     ${dim(`… ${p.versions.length - shown.length} more (use --all)`)}\n`);
     }
   }
   return ok;
 }
 
+/* --------------------------------------------------------------- picker --- */
+
+function parseKeys(input) {
+  const keys = [];
+  const arrows = { A: 'up', B: 'down', C: 'right', D: 'left', H: 'home', F: 'end' };
+  for (let i = 0; i < input.length; i++) {
+    const ch = input[i];
+    if (ch === '\x1b') {
+      const rest = input.slice(i);
+      const csi = /^\x1b\[([0-9;]*)([A-Za-z~])/.exec(rest);
+      const ss3 = csi ? null : /^\x1bO([A-Za-z])/.exec(rest);
+      const m = csi || ss3;
+      if (m) {
+        const final = csi ? m[2] : m[1];
+        if (arrows[final]) keys.push({ type: arrows[final] });
+        else if (csi && final === '~' && m[1] === '5') keys.push({ type: 'pageup' });
+        else if (csi && final === '~' && m[1] === '6') keys.push({ type: 'pagedown' });
+        else keys.push({ type: 'unknown' });
+        i += m[0].length - 1;
+        continue;
+      }
+      keys.push({ type: 'esc' });
+      continue;
+    }
+    if (ch === '\r' || ch === '\n') keys.push({ type: 'enter' });
+    else if (ch === '\x7f' || ch === '\b') keys.push({ type: 'backspace' });
+    else if (ch === '\x03') keys.push({ type: 'ctrl-c' });
+    else if (ch >= ' ') keys.push({ type: 'char', char: ch });
+  }
+  return keys;
+}
+
+function buildPickerRows(plans, lists, filter = '', showAll = false) {
+  const rows = [];
+  const needle = filter.trim().toLowerCase();
+  plans.forEach((p, pi) => {
+    const info = lists[pi];
+    if (!info) { rows.push({ kind: 'error', plugin: pi, name: p.name }); return; }
+    const tagByVersion = new Map();
+    for (const [tag, ver] of Object.entries(info.tags)) {
+      if (!tagByVersion.has(ver)) tagByVersion.set(ver, tag);
+    }
+    const sorted = info.versions.slice().sort((a, b) => compareSemver(b, a));
+    const nameMatch = Boolean(needle) && p.name.toLowerCase().includes(needle);
+    const matching = needle ? sorted.filter((v) => v.toLowerCase().includes(needle)) : sorted;
+    const versions = nameMatch && !matching.length ? sorted : matching;
+    if (needle && !versions.length) return;
+    rows.push({ kind: 'header', plugin: pi, name: p.name });
+    const shown = showAll ? versions : versions.slice(0, CATALOGUE_CAP);
+    for (const ver of shown) {
+      rows.push({ kind: 'version', plugin: pi, version: ver, tag: tagByVersion.get(ver) ?? null });
+    }
+  });
+  return rows;
+}
+
+const isVersionRow = (r) => Boolean(r) && r.kind === 'version';
+
+function firstVersionRow(rows) {
+  return rows.findIndex(isVersionRow);
+}
+
+function stepCursor(rows, cursor, dir) {
+  let i = cursor + dir;
+  while (i >= 0 && i < rows.length) {
+    if (isVersionRow(rows[i])) return i;
+    i += dir;
+  }
+  return cursor;
+}
+
+function clampCursor(rows, cursor) {
+  if (!rows.length) return -1;
+  const i = Math.min(Math.max(cursor, 0), rows.length - 1);
+  if (isVersionRow(rows[i])) return i;
+  for (let d = 1; d < rows.length; d++) {
+    if (isVersionRow(rows[i + d])) return i + d;
+    if (isVersionRow(rows[i - d])) return i - d;
+  }
+  return -1;
+}
+
+function createPickerState(rows) {
+  return {
+    rows, cursor: firstVersionRow(rows), filter: '', filterMode: false,
+    help: false, selected: new Map(), confirmed: false, cancelled: false,
+  };
+}
+
+function pickerReduce(state, key) {
+  const next = { ...state, selected: new Map(state.selected) };
+  if (key.type === 'ctrl-c') { next.cancelled = true; return next; }
+  if (key.type === 'esc') {
+    if (state.filterMode) { next.filterMode = false; next.filter = ''; }
+    else next.cancelled = true;
+    return next;
+  }
+  if (key.type === 'enter') {
+    if (state.filterMode) next.filterMode = false;
+    else next.confirmed = true;
+    return next;
+  }
+  if (key.type === 'up' || key.type === 'down' || key.type === 'pageup' || key.type === 'pagedown') {
+    const dir = key.type === 'up' || key.type === 'pageup' ? -1 : 1;
+    const steps = key.type === 'pageup' || key.type === 'pagedown' ? 10 : 1;
+    let cursor = state.cursor;
+    for (let n = 0; n < steps; n++) cursor = stepCursor(state.rows, cursor, dir);
+    next.cursor = cursor;
+    return next;
+  }
+  if (state.filterMode) {
+    if (key.type === 'backspace') next.filter = state.filter.slice(0, -1);
+    else if (key.type === 'char') next.filter = state.filter + key.char;
+    return next;
+  }
+  if (key.type !== 'char') return next;
+  if (key.char === 'j') next.cursor = stepCursor(state.rows, state.cursor, 1);
+  else if (key.char === 'k') next.cursor = stepCursor(state.rows, state.cursor, -1);
+  else if (key.char === '/') next.filterMode = true;
+  else if (key.char === '?') next.help = !state.help;
+  else if (key.char === 'q' || key.char === 'Q') next.cancelled = true;
+  else if (key.char === ' ') {
+    const row = state.rows[state.cursor];
+    if (isVersionRow(row)) {
+      if (state.selected.get(row.plugin)?.version === row.version) next.selected.delete(row.plugin);
+      else next.selected.set(row.plugin, { version: row.version, tag: row.tag });
+    }
+  }
+  return next;
+}
+
+function renderPicker(state, plans) {
+  const lines = [];
+  lines.push(`${bold('oc-plugin-updater')} ${dim('select versions')}`);
+  lines.push(dim('up/down or j/k move · space select · enter confirm · esc cancel · / filter · ? help'));
+  if (state.filterMode || state.filter) {
+    lines.push(`${dim('filter:')} ${state.filter}${state.filterMode ? cyan('_') : ''}`);
+  }
+  lines.push('');
+  for (const [i, r] of state.rows.entries()) {
+    if (r.kind === 'header') {
+      const p = plans[r.plugin];
+      const picked = state.selected.get(r.plugin);
+      const target = picked ? picked.version : p.version;
+      const mark = picked ? green('*') : dim('o');
+      const installed = p.installed ? `${dim('installed')} ${p.installed}` : dim('not installed');
+      lines.push(`${mark} ${bold(p.name)}  ${installed}  ${dim('target')} ${bold(target)}`);
+    } else if (r.kind === 'error') {
+      lines.push(`  ${red(CROSS)} ${r.name} ${dim('registry lookup failed (keeps default target)')}`);
+    } else {
+      const p = plans[r.plugin];
+      const picked = state.selected.get(r.plugin)?.version === r.version;
+      const marks = [];
+      if (r.version === p.installed) marks.push(dim('current'));
+      if (r.tag) marks.push(green(r.tag));
+      if (picked) marks.push(green('picked'));
+      const cursor = i === state.cursor;
+      lines.push(`${cursor ? cyan('>') : ' '} ${picked ? green('*') : ' '} ${r.version}${marks.length ? '  ' + marks.join(' ') : ''}`);
+    }
+  }
+  if (state.help) {
+    lines.push('');
+    lines.push(dim('space sets the target version for the plugin under the cursor; unpicked plugins keep their default target.'));
+  }
+  lines.push('');
+  return lines.join('\n');
+}
+
+function applyPickerSelection(plans, selected) {
+  for (const [pi, pick] of selected) {
+    const p = plans[pi];
+    if (!p) continue;
+    p.version = pick.version;
+    p.tag = pick.tag;
+    p.upToDate = p.installed === pick.version;
+  }
+}
+
+async function runPicker(plans, lists, showAll) {
+  if (!stdin.isTTY || !stdout.isTTY) {
+    throw Object.assign(
+      new Error('--pick needs an interactive terminal (stdin and stdout must be TTYs).'),
+      { exitCode: 2, detail: 'Use --set name@version or --list in non-interactive shells.' },
+    );
+  }
+  let state = createPickerState(buildPickerRows(plans, lists, '', showAll));
+  if (state.cursor < 0) {
+    throw Object.assign(new Error('No selectable versions (every registry lookup failed).'), { exitCode: 1 });
+  }
+  const hadRaw = typeof stdin.setRawMode === 'function';
+  if (hadRaw) stdin.setRawMode(true);
+  stdin.resume();
+  stdin.setEncoding('utf8');
+  stdout.write('\x1b[?25l');
+  const restore = () => {
+    if (hadRaw) { try { stdin.setRawMode(false); } catch { /* ignore */ } }
+    if (rl) rl.resume();
+    stdout.write('\x1b[?25h');
+  };
+  try {
+    for (;;) {
+      stdout.write('\x1b[2J\x1b[H' + renderPicker(state, plans) + '\n');
+      const chunk = await new Promise((resolve) => {
+        const onData = (data) => { stdin.off('data', onData); resolve(String(data)); };
+        stdin.on('data', onData);
+      });
+      for (const key of parseKeys(chunk)) {
+        state = pickerReduce(state, key);
+        state.rows = buildPickerRows(plans, lists, state.filter, showAll);
+        state.cursor = clampCursor(state.rows, state.cursor);
+        if (state.cancelled || state.confirmed) break;
+      }
+      if (state.cancelled || state.confirmed) break;
+    }
+  } finally {
+    restore();
+  }
+  return state.cancelled ? null : state.selected;
+}
+
+/* ----------------------------------------------------------- maintenance -- */
+
+const WRAPPER_DIR = /^(?:@[a-z0-9-~][a-z0-9-._~]*\/)?[a-z0-9-~][a-z0-9-._~]*(?:@[A-Za-z0-9._+-]+)?$/;
+
+function wrapperBase(dirName) {
+  return dirName.replace(/@[^@]*$/, '');
+}
+
+function backupDirFor(cachePath) {
+  return join(dirname(cachePath), 'oc-plugin-updater-backups');
+}
+
+// Abort (exit 3) when target files are held open, unless --dry-run (which never
+// deletes) or --kill-blockers (which offers to kill the holders first).
+async function ensureUnlocked(paths) {
+  if (flags.dryRun) return;
+  let locked = probeLocked(paths);
+  if (locked.length && flags.killBlockers) {
+    const blockers = findBlockerPids(locked);
+    if (blockers.length) await killBlockers(blockers);
+    locked = probeLocked(paths);
+  }
+  if (locked.length) {
+    throw Object.assign(new Error(`${locked.length} file(s) are locked by running processes.`), {
+      exitCode: 3,
+      detail: 'Close OpenCode (or other holders) and re-run, or use --kill-blockers.',
+    });
+  }
+}
+
+function findOnPath(binaries) {
+  const exts = IS_WIN ? (env.PATHEXT ?? '.EXE;.CMD;.BAT').split(';') : [''];
+  const dirs = (env.PATH ?? '').split(delimiter).filter(Boolean);
+  const hits = [];
+  for (const bin of binaries) {
+    outer:
+    for (const dir of dirs) {
+      for (const ext of exts) {
+        const p = join(dir, bin + ext.toLowerCase());
+        if (existsSync(p)) { hits.push({ bin, path: p }); break outer; }
+      }
+    }
+  }
+  return hits;
+}
+
+function binaryVersion(binPath) {
+  const res = runCommand(binPath, ['--version']);
+  const v = String(res.stdout ?? '').trim().split(/\r?\n/)[0];
+  return res.error || res.status !== 0 || !v ? null : v;
+}
+
+function runDoctor(config, cache, localSpecs, npmSpecs) {
+  section('Doctor');
+  row('config', config.path);
+
+  const files = ['opencode.jsonc', 'opencode.json', 'tui.json', 'tui.jsonc', 'cli.json'];
+  const present = files.filter((f) => existsSync(join(config.path, f)));
+  const emptyFiles = present.filter((f) => !readFileSync(join(config.path, f), 'utf8').trim());
+  row('generation', configGeneration(config.path));
+  row('files read', present.join(', ') || 'none');
+  if (emptyFiles.length) row('empty files', emptyFiles.join(', ') + dim(' (skipped)'));
+  row('npm specs', npmSpecs.join(', ') || 'none');
+  if (localSpecs.length) row('local/URL specs', localSpecs.join(', ') + dim(' (skipped by the updater)'));
+
+  const bins = findOnPath(['opencode', 'opencode2']);
+  if (!bins.length) row('binaries', dim('opencode / opencode2 not found on PATH'));
+  for (const b of bins) row(`bin ${b.bin}`, b.path + dim(` ${binaryVersion(b.path) ?? 'version unknown'}`));
+
+  const wrappers = readdirSync(cache.path, { withFileTypes: true })
+    .filter((e) => e.isDirectory())
+    .map((e) => e.name);
+  const stamped = wrappers.some((w) => {
+    try { return readdirSync(join(cache.path, w)).some((d) => /^\d{10,}$/.test(d)); } catch { return false; }
+  });
+  const base = basename(cache.path);
+  row('cache', cache.path);
+  row('cache layout', (base === 'packages' ? 'v1 (packages)' : base === 'npm' ? 'v2 (npm)' : `custom (${base})`)
+    + (stamped ? dim(' — timestamped installs') : ''));
+  row('wrappers', wrappers.length ? wrappers.join(', ') : dim('none'));
+
+  const lockFiles = wrappers.flatMap((w) => walkNativeFiles(join(cache.path, w)));
+  const locked = probeLocked(lockFiles);
+  row('locks', locked.length ? red(`${locked.length} file(s) locked`) : green('none'));
+
+  for (const pm of ['pnpm', 'npm']) {
+    const probe = runCommand(pm, ['--version']);
+    row(`pm ${pm}`, probe.error || probe.status !== 0 ? dim('not found') : String(probe.stdout ?? '').trim());
+  }
+  if (flags.registry) row('registry', registryBase());
+
+  const pseudo = npmSpecs.map((s) => ({ name: splitSpec(s).name }));
+  reportLeftovers(config.path, cache.path, pseudo);
+  stdout.write(`\n   ${green(TICK)} doctor complete — nothing was changed\n\n`);
+  return 0;
+}
+
+async function runClean(config, cache, localSpecs, npmSpecs) {
+  section('Clean');
+  const known = new Set();
+  for (const s of [...npmSpecs, ...localSpecs]) {
+    const { name } = splitSpec(s);
+    try { assertSafeSpec(name, 'latest'); known.add(name); } catch { /* unsafe names can never match wrappers */ }
+  }
+
+  let entries;
+  try {
+    entries = readdirSync(cache.path, { withFileTypes: true }).filter((e) => e.isDirectory());
+  } catch (err) {
+    throw Object.assign(new Error(`Cannot read cache directory: ${err.message}`), { exitCode: 2 });
+  }
+  const nonWrapper = entries.filter((e) => !WRAPPER_DIR.test(e.name) || e.name === 'node_modules' || e.name.startsWith('.'));
+  if (nonWrapper.length) stdout.write(`   ${dim('skipped (not plugin wrappers):')} ${nonWrapper.map((e) => e.name).join(', ')}\n`);
+
+  const orphans = entries
+    .filter((e) => WRAPPER_DIR.test(e.name) && e.name !== 'node_modules' && !e.name.startsWith('.') && !known.has(wrapperBase(e.name)))
+    .map((e) => join(cache.path, e.name));
+  if (!orphans.length) {
+    stdout.write(`   ${green(TICK)} no orphans — every cached wrapper matches a configured plugin\n\n`);
+    return 0;
+  }
+  stdout.write('   orphans (plugin no longer in any config):\n');
+  orphans.forEach((c) => stdout.write(`     ${red('-')} ${c}\n`));
+
+  if (!flags.dryRun) {
+    if (!flags.yes && (!rl || !(await confirm(`Delete ${orphans.length} orphaned wrapper(s)?`)))) {
+      stdout.write(`\n   ${rl ? dim('aborted by user') : red('refusing to proceed non-interactively (use --yes)')}\n\n`);
+      return 0;
+    }
+    await ensureUnlocked(orphans.flatMap((c) => walkNativeFiles(c)));
+    for (const c of orphans) {
+      rmSync(c, { recursive: true, force: true });
+      stdout.write(`   ${dim('-')} deleted ${c}\n`);
+    }
+  }
+  stdout.write(flags.dryRun
+    ? `\n   ${dim('dry run complete — no files changed')}\n\n`
+    : `\n   ${green(bold(TICK))} clean complete\n\n`);
+  return 0;
+}
+
+async function runRemove(cache) {
+  section('Remove');
+  const targets = new Set();
+  for (const entry of flags.remove) {
+    const { name } = splitSpec(entry);
+    assertSafeSpec(name, 'latest');
+    for (const root of wrapperRoots(cache.path, name)) targets.add(root);
+  }
+  if (!targets.size) {
+    stdout.write(`   ${dim('no cached wrappers matched')} ${flags.remove.join(', ')}\n\n`);
+    return 0;
+  }
+  [...targets].forEach((t) => stdout.write(`     ${red('-')} ${t}\n`));
+  if (!flags.dryRun) {
+    if (!flags.yes && (!rl || !(await confirm(`Delete ${targets.size} cached wrapper(s)? The OpenCode config is not touched.`)))) {
+      stdout.write(`\n   ${rl ? dim('aborted by user') : red('refusing to proceed non-interactively (use --yes)')}\n\n`);
+      return 0;
+    }
+    await ensureUnlocked([...targets].flatMap((t) => walkNativeFiles(t)));
+    for (const t of targets) {
+      rmSync(t, { recursive: true, force: true });
+      stdout.write(`   ${dim('-')} deleted ${t}\n`);
+    }
+    stdout.write(`\n   ${yellow('!')} remember to remove ${flags.remove.join(', ')} from your OpenCode config (this tool never edits config)\n`);
+  }
+  stdout.write(flags.dryRun
+    ? `\n   ${dim('dry run complete — no files changed')}\n\n`
+    : `\n   ${green(bold(TICK))} remove complete\n\n`);
+  return 0;
+}
+
+async function runRollback(cache) {
+  section('Rollback');
+  const bdir = backupDirFor(cache.path);
+  const entries = existsSync(bdir)
+    ? readdirSync(bdir, { withFileTypes: true })
+      .filter((e) => e.isDirectory() && /@\d{12,}$/.test(e.name))
+      .map((e) => ({ name: e.name, path: join(bdir, e.name), ts: e.name.match(/@(\d{12,})$/)[1] }))
+      .sort((a, b) => (a.ts < b.ts ? 1 : -1))
+    : [];
+  if (!entries.length) {
+    stdout.write(`   ${dim('no backups found at')} ${bdir}\n\n`);
+    return 0;
+  }
+  const latest = new Map();
+  for (const e of entries) {
+    const base = e.name.replace(/@\d{12,}$/, '');
+    if (!latest.has(base)) latest.set(base, e);
+  }
+  const restores = [...latest.entries()].map(([base, e]) => ({ base, backup: e.path, target: join(cache.path, base) }));
+  restores.forEach((r) => stdout.write(`     ${cyan('~')} ${r.backup}\n         ${dim('->')} ${r.target}\n`));
+
+  if (!flags.dryRun) {
+    if (!flags.yes && (!rl || !(await confirm(`Restore ${restores.length} backup(s), replacing current wrappers?`)))) {
+      stdout.write(`\n   ${rl ? dim('aborted by user') : red('refusing to proceed non-interactively (use --yes)')}\n\n`);
+      return 0;
+    }
+    await ensureUnlocked(restores.filter((r) => existsSync(r.target)).flatMap((r) => walkNativeFiles(r.target)));
+    for (const r of restores) {
+      if (existsSync(r.target)) rmSync(r.target, { recursive: true, force: true });
+      renameSync(r.backup, r.target);
+      stdout.write(`   ${green(TICK)} restored ${r.base}\n`);
+    }
+  }
+  stdout.write(flags.dryRun
+    ? `\n   ${dim('dry run complete — no files changed')}\n\n`
+    : `\n   ${green(bold(TICK))} rollback complete ${dim(`(older backups kept in ${bdir})`)}\n\n`);
+  return 0;
+}
+
+/* ----------------------------------------------------------------- P4 ----- */
+
+// Shared update check for --notify and the library checkUpdates() entry.
+async function collectUpdateInfo(cache, npmSpecs) {
+  const updates = [];
+  const current = [];
+  for (const spec of npmSpecs) {
+    const { name, ref } = splitSpec(spec);
+    assertSafeSpec(name, ref);
+    const target = await resolveTarget(name, ref);
+    let installed = null;
+    for (const root of wrapperRoots(cache.path, name)) {
+      installed = installedVersionIn(root, name);
+      if (installed) break;
+    }
+    const entry = { name, installed, target: target.version, tag: target.tag ?? null, upToDate: installed === target.version };
+    (entry.upToDate ? current : updates).push(entry);
+  }
+  return { updates, current };
+}
+
+async function runNotify(cache, npmSpecs) {
+  const { updates, current } = await collectUpdateInfo(cache, npmSpecs);
+  if (flags.json) {
+    stdout.write(JSON.stringify({ updatesAvailable: updates.length > 0, updates, current }, null, 2) + '\n');
+  } else {
+    section('Notify');
+    for (const e of current) stdout.write(`   ${dim('-')} ${e.name} ${dim(`${e.installed} (current)`)}\n`);
+    for (const e of updates) stdout.write(`   ${yellow('!')} ${e.name} ${dim(`${e.installed ?? 'not installed'} ->`)} ${bold(e.target)}${e.tag ? green(` (${e.tag})`) : ''}\n`);
+    stdout.write(updates.length
+      ? `\n   ${yellow(bold('!'))} ${updates.length} update(s) available — run without --notify to install\n\n`
+      : `\n   ${green(bold(TICK))} everything up to date\n\n`);
+  }
+  return updates.length ? 4 : 0;
+}
+
+async function runGitPull(config) {
+  const say = (text) => (flags.json ? console.error(text) : stdout.write(text));
+  if (!existsSync(join(config.path, '.git'))) {
+    say(`   ${dim('git sync skipped — config directory is not a git repository')}\n`);
+    return;
+  }
+  say(`   ${dim(`git pull --ff-only in ${config.path}`)}\n`);
+  const res = runCommand('git', ['-C', config.path, 'pull', '--ff-only']);
+  const out = `${String(res.stdout ?? '')}${String(res.stderr ?? '')}`.trim();
+  if (out) out.split(/\r?\n/).forEach((l) => say(`     ${dim(l)}\n`));
+  if (res.status !== 0) say(`   ${yellow('!')} git pull failed (exit ${res.status}) — continuing with the local state\n`);
+  else say(`   ${green(TICK)} config directory synced\n`);
+}
+
+function completionsFor(shell) {
+  const flagsList = '--list --pick --set --only --clean --remove --rollback --backup --doctor --notify --git-pull --json --registry --completions --dry-run --yes --all --pm --config-dir --cache-dir --kill-blockers --selftest --help';
+  if (shell === 'bash') {
+    return `# bash completion for oc-plugin-updater
+_oc_plugin_updater() {
+  local cur="\${COMP_WORDS[COMP_CWORD]}"
+  case "\${COMP_WORDS[COMP_CWORD-1]}" in
+    --pm) COMPREPLY=( $(compgen -W 'pnpm npm' -- "$cur") ); return ;;
+    --config-dir|--cache-dir|--registry) COMPREPLY=( $(compgen -f -- "$cur") ); return ;;
+    --set|--only|--remove) return ;;
+    --completions) COMPREPLY=( $(compgen -W 'bash zsh pwsh' -- "$cur") ); return ;;
+  esac
+  COMPREPLY=( $(compgen -W '${flagsList}' -- "$cur") )
+}
+complete -F _oc_plugin_updater oc-plugin-updater
+`;
+  }
+  if (shell === 'zsh') {
+    return `#compdef oc-plugin-updater
+_oc_plugin_updater() {
+  _arguments -S \\
+    '--list[print the version catalogue]' \\
+    '--pick[interactive version picker]' \\
+    '--set[target an exact version/tag]' \\
+    '--only[process only the named plugin]' \\
+    '--clean[remove orphaned cache wrappers]' \\
+    '--remove[delete a plugin cached wrappers]' \\
+    '--rollback[restore the most recent backups]' \\
+    '--backup[snapshot wrappers before replacing]' \\
+    '--doctor[report paths, generation, layout, locks]' \\
+    '--notify[check-only: exit 4 when updates exist]' \\
+    '--git-pull[pull the config directory first]' \\
+    '--json[machine-readable output]' \\
+    '--registry[use a custom registry]' \\
+    '--completions[print a completion script: bash zsh pwsh]' \\
+    '--dry-run[show what would change]' \\
+    '--yes[non-interactive]' \\
+    '--all[uncap catalogue lists]' \\
+    '--pm[package manager: pnpm npm]' \\
+    '--config-dir[OpenCode config directory]:dir:_directories' \\
+    '--cache-dir[package cache directory]:dir:_directories' \\
+    '--kill-blockers[kill processes holding files locked]' \\
+    '--help[usage]'
+}
+_oc_plugin_updater "$@"
+`;
+  }
+  return `# pwsh completion for oc-plugin-updater
+Register-ArgumentCompleter -CommandName oc-plugin-updater -Native -ScriptBlock {
+  param($wordToComplete, $commandAst, $cursorPosition)
+  $flags = @('${flagsList.split(' ').join("', '")}')
+  $flags | Where-Object { $_ -like "$wordToComplete*" } | ForEach-Object {
+    [System.Management.Automation.CompletionResult]::new($_)
+  }
+}
+`;
+}
+
+function emitCompletions() {
+  stdout.write(completionsFor(flags.completions));
+  return 0;
+}
+
+/* -------------------------------------------------------------- selftest -- */
+
+function runSelftest() {
+  let passed = 0;
+  let failed = 0;
+  const check = (name, ok) => {
+    if (ok) { passed++; stdout.write(`   ${green(TICK)} ${name}\n`); }
+    else { failed++; stdout.write(`   ${red(CROSS)} ${name}\n`); }
+  };
+
+  check('parseKeys: up arrow', parseKeys('\x1b[A')[0]?.type === 'up');
+  check('parseKeys: two keys in one chunk', parseKeys('\x1b[B\x1b[A').map((k) => k.type).join(',') === 'down,up');
+  check('parseKeys: bare escape', parseKeys('\x1b')[0]?.type === 'esc');
+  check('parseKeys: enter', parseKeys('\r')[0]?.type === 'enter');
+  check('parseKeys: backspace', parseKeys('\x7f')[0]?.type === 'backspace');
+  check('parseKeys: printable char', parseKeys('a')[0]?.char === 'a');
+
+  check('spec: local paths detected', isLocalSpec('./plugin/local.ts') && isLocalSpec('../x') && isLocalSpec('file:./x') && isLocalSpec('C:\\x'));
+  check('spec: url detected', isLocalSpec('https://example.com/p.ts'));
+  check('spec: npm specs kept', !isLocalSpec('oh-my-openagent@latest') && !isLocalSpec('@scope/pkg') && !isLocalSpec('pkg'));
+
+  check('wrappers: base name parsed', wrapperBase('oh-my-openagent@latest') === 'oh-my-openagent' && wrapperBase('@scope/pkg@1.0.0') === '@scope/pkg' && wrapperBase('pkg') === 'pkg');
+  check('wrappers: candidate pattern', WRAPPER_DIR.test('pkg@latest') && WRAPPER_DIR.test('@scope/pkg') && WRAPPER_DIR.test('pkg'));
+
+  check('npmrc: host token matched', npmrcTokenFor('//npm.pkg.github.com/:_authToken=t1\n//x.y:_authToken=t2', 'https://npm.pkg.github.com/p') === 't1');
+  check('npmrc: port host matched', npmrcTokenFor('//localhost:4873:_authToken=t2', 'http://localhost:4873/p') === 't2');
+  check('npmrc: mismatch is null', npmrcTokenFor('//a.b/:_authToken=t', 'https://registry.npmjs.org/p') === null);
+
+  const plans = [
+    { name: 'alpha', version: '2.0.0', installed: '1.0.0' },
+    { name: 'beta', version: '1.5.0', installed: null },
+  ];
+  const lists = [
+    { versions: ['1.0.0', '2.0.0', '1.5.0'], tags: { latest: '2.0.0' } },
+    { versions: ['1.5.0', '0.9.0'], tags: { latest: '1.5.0' } },
+  ];
+  const rows = buildPickerRows(plans, lists, '', false);
+  check('rows: one header per plugin', rows.filter((r) => r.kind === 'header').length === 2);
+  check('rows: versions sorted descending', rows.find((r) => r.kind === 'version' && r.plugin === 0)?.version === '2.0.0');
+  check('rows: dist-tag attached', rows.find((r) => r.kind === 'version' && r.plugin === 1)?.tag === 'latest');
+  check('rows: filter narrows versions', buildPickerRows(plans, lists, '1.5', false).filter((r) => r.kind === 'version').every((r) => r.version.includes('1.5')));
+  check('render: plugins and cursor visible', renderPicker(createPickerState(rows), plans).includes('alpha') && renderPicker(createPickerState(rows), plans).includes('>'));
+
+  let state = createPickerState(rows);
+  check('state: cursor starts on a version', isVersionRow(rows[state.cursor]));
+  const start = state.cursor;
+  state = pickerReduce(state, { type: 'down' });
+  check('reduce: down moves cursor', state.cursor !== start && isVersionRow(rows[state.cursor]));
+  const row = state.rows[state.cursor];
+  state = pickerReduce(state, { type: 'char', char: ' ' });
+  check('reduce: space selects version', state.selected.get(row.plugin)?.version === row.version);
+  state = pickerReduce(state, { type: 'char', char: ' ' });
+  check('reduce: space toggles selection off', !state.selected.has(row.plugin));
+  state = pickerReduce(state, { type: 'char', char: '/' });
+  check('reduce: slash enters filter', state.filterMode === true);
+  state = pickerReduce(state, { type: 'char', char: 'x' });
+  check('reduce: filter appends chars', state.filter === 'x');
+  state = pickerReduce(state, { type: 'backspace' });
+  check('reduce: backspace removes chars', state.filter === '');
+  state = pickerReduce(state, { type: 'esc' });
+  check('reduce: esc leaves filter mode', state.filterMode === false && state.cancelled === false);
+  state = pickerReduce(state, { type: 'esc' });
+  check('reduce: esc cancels', state.cancelled === true);
+  state = pickerReduce(createPickerState(rows), { type: 'enter' });
+  check('reduce: enter confirms', state.confirmed === true);
+  state = pickerReduce(createPickerState(rows), { type: 'ctrl-c' });
+  check('reduce: ctrl-c cancels', state.cancelled === true);
+
+  const applied = plans.map((p) => ({ ...p }));
+  applyPickerSelection(applied, new Map([[0, { version: '1.5.0', tag: null }]]));
+  check('apply: sets picked version', applied[0].version === '1.5.0');
+  check('apply: recomputes upToDate', applied[0].upToDate === false);
+
+  stdout.write(`\n   selftest: ${passed} passed, ${failed} failed\n`);
+  return failed === 0;
+}
+
 /* ---------------------------------------------------------------- main ---- */
 
 async function main() {
-  banner();
+  if (flags.completions) return emitCompletions();
+  if (!flags.json) banner();
 
   for (const [flagName, value] of [['--config-dir', flags.configDir], ['--cache-dir', flags.cacheDir]]) {
     if (value && !existsDir(value)) {
@@ -583,21 +1375,45 @@ async function main() {
     }
   }
 
-  section('Paths');
+  if (!flags.json) section('Paths');
   const config = flags.configDir
     ? { path: flags.configDir, source: 'flag' }
     : await resolveDir('config', configCandidates(), configHasMarker);
-  row('config', config.path + (config.source === 'prompted' ? dim(' (prompted)') : ''));
+  if (!flags.json) row('config', config.path + (config.source === 'prompted' ? dim(' (prompted)') : ''));
+
+  if (flags.gitPull) await runGitPull(config);
+
+  const found = readPluginSpecs(config.path);
+  const localSpecs = found.filter(isLocalSpec);
+  const specs = found.filter((s) => !isLocalSpec(s));
+  if (localSpecs.length) {
+    const note = `   ${yellow('!')} skipping local/URL plugin specs (not npm packages): ${localSpecs.join(', ')}\n`;
+    if (flags.json) console.error(note.trimEnd()); else stdout.write(note);
+  }
+  if (!specs.length) {
+    throw Object.assign(new Error(
+      localSpecs.length
+        ? `Only local/URL plugin specs found in ${config.path} — nothing for this tool to update.`
+        : `No plugin specs found in ${config.path}`,
+    ), { exitCode: 2 });
+  }
+  if (!flags.json) row('plugins', specs.join(', '));
+
+  // Cache base follows the config generation: v2 installs under `npm`, v1 under `packages`.
+  const generation = configGeneration(config.path);
+  const cacheBases = (generation === 'v2' || generation === 'mixed') ? ['npm', 'packages'] : ['packages', 'npm'];
   const cache = flags.cacheDir
     ? { path: flags.cacheDir, source: 'flag' }
-    : await resolveDir('package cache', cacheCandidates(), () => true);
-  row('cache', cache.path + (cache.source === 'prompted' ? dim(' (prompted)') : ''));
+    : await resolveDir('package cache', cacheBases.flatMap(cacheCandidates), cacheHasEntries);
+  if (!flags.json) row('cache', cache.path + (cache.source === 'prompted' ? dim(' (prompted)') : ''));
 
-  const specs = readPluginSpecs(config.path);
-  if (!specs.length) throw Object.assign(new Error(`No plugin specs found in ${config.path}`), { exitCode: 2 });
-  row('plugins', specs.join(', '));
+  if (flags.doctor) return runDoctor(config, cache, localSpecs, specs);
+  if (flags.clean) return runClean(config, cache, localSpecs, specs);
+  if (flags.remove.length) return runRemove(cache);
+  if (flags.rollback) return runRollback(cache);
+  if (flags.notify) return runNotify(cache, specs);
 
-  section('Versions');
+  if (!flags.json) section('Versions');
   let plans = [];
   for (const spec of specs) {
     const { name, ref } = splitSpec(spec);
@@ -605,11 +1421,8 @@ async function main() {
     const target = await resolveTarget(name, ref);
     let installed = null;
     for (const root of wrapperRoots(cache.path, name)) {
-      const pj = join(root, 'node_modules', name, 'package.json');
-      if (existsSync(pj)) {
-        try { installed = JSON.parse(readFileSync(pj, 'utf8')).version; } catch { /* skip */ }
-        break;
-      }
+      installed = installedVersionIn(root, name);
+      if (installed) break;
     }
     plans.push({ spec, name, ...target, installed });
   }
@@ -643,30 +1456,48 @@ async function main() {
     return ok ? 0 : 1;
   }
 
+  if (flags.pick) {
+    const lists = await Promise.all(plans.map((p) => fetchVersionList(p.name)));
+    const selected = await runPicker(plans, lists, flags.all);
+    if (!selected) {
+      stdout.write(`\n   ${dim('aborted by user')}\n\n`);
+      return 0;
+    }
+    applyPickerSelection(plans, selected);
+  }
+
   const nameW = Math.max(...plans.map((p) => p.name.length), 7);
-  stdout.write(`   ${dim('PLUGIN'.padEnd(nameW))}  ${dim('INSTALLED'.padEnd(22))}  ${dim('TARGET')}\n`);
+  if (!flags.json) {
+    stdout.write(`   ${dim('PLUGIN'.padEnd(nameW))}  ${dim('INSTALLED'.padEnd(22))}  ${dim('TARGET')}\n`);
+    for (const p of plans) {
+      const cur = p.installed
+        ? (p.installed === p.version
+          ? `${p.installed} ${dim('(current)')}`
+          : `${p.installed} ${yellow('(current)')}`)
+        : dim('not installed');
+      const tgt = p.tag ? `${p.version} ${green(`(${p.tag})`)}` : p.version;
+      stdout.write(`   ${p.name.padEnd(nameW)}  ${cur.padEnd(22)}  ${bold(tgt)}\n`);
+    }
+  }
   for (const p of plans) {
-    const cur = p.installed
-      ? (p.installed === p.version
-        ? `${p.installed} ${dim('(current)')}`
-        : `${p.installed} ${yellow('(current)')}`)
-      : dim('not installed');
-    const tgt = p.tag ? `${p.version} ${green(`(${p.tag})`)}` : p.version;
-    stdout.write(`   ${p.name.padEnd(nameW)}  ${cur.padEnd(22)}  ${bold(tgt)}\n`);
     if (p.installed === p.version) p.upToDate = true;
   }
   const todo = plans.filter((p) => !p.upToDate);
   if (!todo.length) {
-    stdout.write(`\n   ${green(TICK)} everything up to date — nothing to do\n\n`);
-    reportLeftovers(config.path, cache.path, plans);
+    if (flags.json) {
+      stdout.write(JSON.stringify({ plan: [], updatesAvailable: false, upToDate: true }, null, 2) + '\n');
+    } else {
+      stdout.write(`\n   ${green(TICK)} everything up to date — nothing to do\n\n`);
+      reportLeftovers(config.path, cache.path, plans);
+    }
     return 0;
   }
 
-  section('Safety');
+  if (!flags.json) section('Safety');
   const nativeFiles = plans.flatMap((p) => wrapperRoots(cache.path, p.name).flatMap(walkNativeFiles));
   let locked = probeLocked(nativeFiles);
   if (locked.length) {
-    stdout.write(`   ${yellow('!')} ${locked.length} package file(s) locked by a running process\n`);
+    if (!flags.json) stdout.write(`   ${yellow('!')} ${locked.length} package file(s) locked by a running process\n`);
     if (flags.killBlockers && !flags.dryRun) {
       const blockers = findBlockerPids(locked);
       if (!blockers.length) {
@@ -682,16 +1513,37 @@ async function main() {
         { exitCode: 3 });
     }
   } else {
-    stdout.write(`   ${green(TICK)} no blocking locks\n`);
+    if (!flags.json) stdout.write(`   ${green(TICK)} no blocking locks\n`);
   }
 
   if (flags.dryRun) {
-    section('Plan (dry run — nothing will change)');
     const pm = flags.pm ?? availablePackageManagers()[0] ?? '(none found)';
+    const plan = [];
     for (const p of plans) {
-      if (p.upToDate) { stdout.write(`   ${dim('-')} ${p.name} ${dim('skip (current)')}\n`); continue; }
-      for (const root of wrapperRoots(cache.path, p.name)) stdout.write(`   ${dim('-')} would delete ${root}\n`);
-      stdout.write(`   ${'+'} would install ${p.name}@${p.version} ${dim(`(${pm})`)}\n`);
+      if (p.upToDate) { plan.push({ action: 'skip', name: p.name }); continue; }
+      plan.push({
+        action: 'update',
+        name: p.name,
+        from: p.installed,
+        to: p.version,
+        tag: p.tag ?? null,
+        deletes: wrapperRoots(cache.path, p.name),
+        packageManager: pm,
+      });
+    }
+    if (flags.json) {
+      stdout.write(JSON.stringify({
+        plan,
+        updatesAvailable: plan.some((a) => a.action === 'update'),
+        locked: locked.length > 0,
+      }, null, 2) + '\n');
+      return 0;
+    }
+    section('Plan (dry run — nothing will change)');
+    for (const a of plan) {
+      if (a.action === 'skip') { stdout.write(`   ${dim('-')} ${a.name} ${dim('skip (current)')}\n`); continue; }
+      for (const root of a.deletes) stdout.write(`   ${dim('-')} would delete ${root}\n`);
+      stdout.write(`   ${'+'} would install ${a.name}@${a.to} ${dim(`(${a.packageManager})`)}\n`);
     }
     if (locked.length) stdout.write(`   ${yellow('!')} locked right now — a real run would abort until OpenCode is closed\n`);
     stdout.write(`\n   ${dim('dry run complete — no files changed')}\n\n`);
@@ -706,24 +1558,45 @@ async function main() {
   section('Update');
   const pm = await choosePackageManager(flags.pm);
   row('manager', pm);
+  if (flags.backup) row('backup', backupDirFor(cache.path));
   for (const p of plans) {
     if (p.upToDate) { stdout.write(`   ${dim('-')} ${p.name} ${dim('skip (current)')}\n`); continue; }
+    let backupOf = null;
     for (const root of wrapperRoots(cache.path, p.name)) {
-      rmSync(root, { recursive: true, force: true });
-      stdout.write(`   ${dim('-')} deleted ${root}\n`);
+      if (flags.backup) {
+        const bdir = backupDirFor(cache.path);
+        mkdirSync(bdir, { recursive: true });
+        const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14);
+        backupOf = join(bdir, `${basename(root)}@${stamp}`);
+        renameSync(root, backupOf);
+        stdout.write(`   ${dim('~')} backed up ${root} ${dim(`-> ${backupOf}`)}\n`);
+      } else {
+        rmSync(root, { recursive: true, force: true });
+        stdout.write(`   ${dim('-')} deleted ${root}\n`);
+      }
     }
     const dir = join(cache.path, p.spec);
     mkdirSync(dir, { recursive: true });
     stdout.write(`   ${'+'} ${p.name}@${p.version}\n`);
-    await installWith(pm, p.name, p.version, dir);
+    try {
+      await installWith(pm, p.name, p.version, dir);
+    } catch (err) {
+      if (backupOf && existsSync(backupOf)) {
+        renameSync(backupOf, join(cache.path, basename(backupOf).replace(/@\d{12,}$/, '')));
+        stdout.write(`   ${yellow('!')} install failed — previous wrapper restored\n`);
+      }
+      throw err;
+    }
   }
 
   section('Verify');
   let failed = false;
   for (const p of plans) {
-    const pj = join(cache.path, p.spec, 'node_modules', p.name, 'package.json');
     let got = null;
-    try { got = JSON.parse(readFileSync(pj, 'utf8')).version; } catch { /* missing */ }
+    for (const root of wrapperRoots(cache.path, p.name)) {
+      got = installedVersionIn(root, p.name);
+      if (got) break;
+    }
     if (got === p.version) stdout.write(`   ${green(TICK)} ${p.name} ${got}\n`);
     else { stdout.write(`   ${red(CROSS)} ${p.name} expected ${p.version}, got ${got ?? 'nothing'}\n`); failed = true; }
   }
@@ -735,12 +1608,49 @@ async function main() {
   return 0;
 }
 
-main()
-  .then((code) => exit(code))
-  .catch((err) => {
-    stdout.write(`\n   ${red(bold(CROSS))} ${err.message}\n`);
-    if (err.detail) stdout.write(indent(err.detail) + '\n');
-    stdout.write('\n');
-    exit(err.exitCode ?? 1);
-  })
-  .finally(() => rl?.close());
+/* ------------------------------------------------------------- library ---- */
+
+// Programmatic entries for embedding (import 'oc-plugin-updater'). They mutate the
+// module-level flags, run once, and resolve with the CLI exit code.
+function applyLibraryOptions(options = {}) {
+  if (options.configDir) flags.configDir = options.configDir;
+  if (options.cacheDir) flags.cacheDir = options.cacheDir;
+  if (options.pm) flags.pm = options.pm;
+  if (options.registry) flags.registry = options.registry;
+  if (options.yes) flags.yes = true;
+  if (options.dryRun) flags.dryRun = true;
+  if (Array.isArray(options.only)) flags.only = options.only;
+  if (Array.isArray(options.set)) flags.set = options.set;
+}
+
+export async function updatePlugins(options = {}) {
+  applyLibraryOptions(options);
+  return main();
+}
+
+export async function checkUpdates(options = {}) {
+  applyLibraryOptions(options);
+  flags.notify = true;
+  return main();
+}
+
+export {
+  parseJsonc, splitSpec, isLocalSpec, compareSemver, fetchVersionList, wrapperBase,
+  WRAPPER_DIR, parseKeys, pickerReduce, buildPickerRows, clampCursor,
+  applyPickerSelection, createPickerState, isVersionRow, configGeneration,
+  npmrcTokenFor, applyLibraryOptions,
+};
+
+if (invoked) {
+  if (flags.selftest) exit(runSelftest() ? 0 : 1);
+
+  main()
+    .then((code) => exit(code))
+    .catch((err) => {
+      stdout.write(`\n   ${red(bold(CROSS))} ${err.message}\n`);
+      if (err.detail) stdout.write(indent(err.detail) + '\n');
+      stdout.write('\n');
+      exit(err.exitCode ?? 1);
+    })
+    .finally(() => rl?.close());
+}

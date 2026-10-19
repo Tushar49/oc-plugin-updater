@@ -22,7 +22,7 @@ OpenCode installs npm plugins with Bun at startup and caches them locally. Once 
 
 `oc-plugin-updater` is a small, dependency-free Node CLI that:
 
-1. **Reads** the plugin list from your OpenCode config — `plugin` (v1) and `plugins` (v2) shapes, across `opencode.jsonc`, `opencode.json`, `tui.json`, `cli.json`.
+1. **Reads** the plugin list from your OpenCode config — the `plugin` (v1) and `plugins` (v2) shapes, across `opencode.jsonc` / `opencode.json` and the `tui.json(c)` variants.
 2. **Resolves** the target version from the npm registry and shows `(current)` vs `(latest)` per plugin.
 3. **Probes** for locked package files *before* deleting anything.
 4. **Reinstalls** with **pnpm or npm** — you choose.
@@ -66,13 +66,92 @@ node bin/cli.mjs --dry-run              # show the plan, change nothing
 node bin/cli.mjs --set oh-my-openagent@5.1.20 --only oh-my-openagent --dry-run
 ```
 
+### Pick versions interactively
+
+```bash
+node bin/cli.mjs --pick                 # choose targets with arrow keys
+node bin/cli.mjs --pick --dry-run       # try the picker without touching the cache
+```
+
+`--pick` opens a full-screen picker: `↑`/`↓` (or `j`/`k`) move, `/` filters versions,
+`Space` sets the target for the highlighted plugin, `Enter` confirms, `Esc` cancels, `?` shows help.
+Unpicked plugins keep their default target. It requires a TTY; in scripts, use `--set` instead.
+
+### Maintenance toolkit
+
+```bash
+node bin/cli.mjs --doctor                 # what does this machine look like?
+node bin/cli.mjs --clean --dry-run        # which cached wrappers are orphans?
+node bin/cli.mjs --clean                  # delete orphans (asks; --yes to skip)
+node bin/cli.mjs --remove old-plugin      # drop a plugin's wrappers, keep config read-only
+node bin/cli.mjs --rollback               # undo the last backed-up update
+node bin/cli.mjs --backup                 # update with a safety snapshot first
+node bin/cli.mjs --registry http://localhost:4873   # point lookups+installs at a mirror
+```
+
+`--backup` stores the previous wrapper in `oc-plugin-updater-backups/` next to the
+cache directory. If an install fails, the previous wrapper is restored automatically;
+`--rollback` restores the newest backup per wrapper on demand. Destructive modes
+(`--clean`, `--remove`, `--rollback`) refuse to run non-interactively without `--yes`.
+
+### Check-only mode and automation
+
+```bash
+node bin/cli.mjs --notify                  # exit 4 when updates exist, 0 when current
+node bin/cli.mjs --notify --json           # { updatesAvailable, updates, current }
+node bin/cli.mjs --list --json             # the full catalogue as JSON
+node bin/cli.mjs --dry-run --json          # the update plan as JSON
+node bin/cli.mjs --git-pull                # git pull --ff-only the config dir first
+node bin/cli.mjs --registry https://npm.pkg.github.com   # private/mirror registry
+```
+
+Private registries are authenticated from `~/.npmrc` (`//host/:_authToken=…`) —
+the tool sends a Bearer header for matching hosts; pnpm/npm read the same file
+for installs, so credentials are never handled by this tool.
+
+Schedule a daily check — Task Scheduler:
+```powershell
+schtasks /Create /SC DAILY /ST 09:00 /TN "oc-plugin-updater" /TR "node A:\path\bin\cli.mjs --notify"
+```
+cron / launchd:
+```bash
+0 9 * * * node /path/bin/cli.mjs --notify
+```
+
+Shell completions:
+```bash
+node bin/cli.mjs --completions pwsh >> $PROFILE          # restart the shell after
+node bin/cli.mjs --completions bash >> ~/.bashrc
+node bin/cli.mjs --completions zsh                       # add to fpath, then compinit
+```
+A compact man page ships at `docs/oc-plugin-updater.1`.
+
+### Library API
+
+```js
+import { checkUpdates, updatePlugins } from 'oc-plugin-updater';
+
+const code = await checkUpdates({ configDir, cacheDir });  // 0 = current, 4 = updates
+if (code === 4) await updatePlugins({ configDir, cacheDir, yes: true });
+```
+
+Both entries accept `{ configDir, cacheDir, pm, registry, yes, dryRun, only, set }`
+and resolve with the CLI exit code. Importing the package never runs the CLI.
+
 ### Flags
 
 | Flag | Description |
 | --- | --- |
 | `--list` | Print the full version catalogue per plugin and exit. |
+| `--pick` | Choose target versions in an interactive picker (requires a TTY). |
 | `--set <name@version>` | Target an exact version/tag for a plugin (repeatable). |
 | `--only <name>` | Process only the named plugin (repeatable). |
+| `--clean` | Remove cached wrappers whose plugin is no longer in any config. |
+| `--remove <name>` | Delete a plugin's cached wrappers (config is never touched). |
+| `--backup` | Snapshot wrappers to a backup dir before replacing them; a failed install auto-restores. |
+| `--rollback` | Restore the most recent backup of each updated wrapper. |
+| `--doctor` | Report paths, config generation (v1/v2), cache layout, locks, tools. |
+| `--registry <url>` | Use a custom npm registry (mirror) for lookups and installs. |
 | `--dry-run` | Show what would change; touches nothing. |
 | `--yes`, `-y` | Skip the confirmation prompt (non-interactive). |
 | `--all` | With `--list`, show every version (default caps at 30). |
@@ -82,7 +161,7 @@ node bin/cli.mjs --set oh-my-openagent@5.1.20 --only oh-my-openagent --dry-run
 | `--kill-blockers` | Find and kill processes holding package files. Asks for confirmation on a TTY. |
 | `-h`, `--help` | Show usage. |
 
-Exit codes: `0` success · `1` install/verify failure · `2` usage/path error · `3` files locked.
+Exit codes: `0` success · `1` install/verify failure · `2` usage/path error · `3` files locked · `4` updates available (`--notify`).
 
 ## How paths are detected
 
@@ -91,7 +170,7 @@ First existing candidate wins. When nothing is found, an interactive terminal is
 | | Detection order |
 | --- | --- |
 | **Config** | `$OPENCODE_CONFIG_DIR` → `dirname($OPENCODE_CONFIG)` → `$XDG_CONFIG_HOME/opencode` → `~/.config/opencode` → `%APPDATA%\opencode` / `%LOCALAPPDATA%\opencode` (Windows) |
-| **Package cache** | `$XDG_CACHE_HOME/opencode/packages` → `~/.cache/opencode/packages` → `%LOCALAPPDATA%\opencode\packages` → `%APPDATA%\opencode\packages` (Windows) |
+| **Package cache** | `packages` / `npm` bases under: `$XDG_CACHE_HOME/opencode` → `~/.cache/opencode` → `%LOCALAPPDATA%\opencode` / `%APPDATA%\opencode` (Windows). The base follows your config generation: v2 `plugins` configs prefer `npm`, v1 `plugin` configs prefer `packages`; both are tried automatically. |
 
 Use `--config-dir` / `--cache-dir` to bypass detection entirely.
 
@@ -106,6 +185,10 @@ Both config generations are read:
 | Terminal settings file | layered | single global |
 
 Config fields that v2 keeps for compatibility are still detected; the tool does not care which generation is installed.
+
+Local-path plugin specs (for example `./plugin/local.ts` in a v2 `plugins` entry, or a v1 `[pkg, options]` tuple)
+are not npm packages: they are skipped with a visible note instead of aborting the run. v2 semantics worth knowing:
+exact version pins are immutable in v2, and `opencode plugin update <pkg>` exists there.
 
 ## Safety model
 
